@@ -22,8 +22,8 @@ Features:
 3. Support json-serialization of the model so that model can be saved and loaded easily.
 '''
 
-from __future__ import division
-from __future__ import absolute_import
+# from __future__ import division
+# from __future__ import absolute_import
 from builtins import range
 from builtins import object
 from copy import deepcopy
