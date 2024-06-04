@@ -34,8 +34,8 @@ import warnings
 
 import numpy as np
 
-
-from .forward_backward import forward_backward
+from scipy.special import logsumexp
+from .forward_backward import forward_backward, viterbi
 from .linear_models import (GLM, OLS, DiscreteMNL, CrossEntropyMNL)
 
 
@@ -71,6 +71,9 @@ class BaseIOHMM(object):
         """
         self.num_states = num_states
         self.trained = False
+        self.log_prob_initial = None
+        self.log_prob_transition = None
+        self.log_Ey = None
 
     def set_models(self, model_emissions,
                    model_initial=CrossEntropyMNL(),
@@ -349,6 +352,11 @@ class BaseIOHMM(object):
                     np.array(self.inp_emissions[seq][emis]).astype('float64'),
                     np.array(self.out_emissions[seq][emis])) for model in model_collection]).T
             # forward backward to calculate posterior
+
+            self.log_prob_initial = log_prob_initial
+            self.log_prob_transition = log_prob_transition
+            self.log_Ey = log_Ey
+
             log_gamma, log_epsilon, log_likelihood = forward_backward(
                 log_prob_initial, log_prob_transition, log_Ey, self.dfs_logStates[seq][1])
             self.log_gammas.append(log_gamma)
@@ -406,6 +414,8 @@ class BaseIOHMM(object):
             if abs(self.log_likelihood - log_likelihood_prev) < self.EM_tol:
                 break
         self.trained = True
+
+
 
     def to_json(self, path):
         """
@@ -574,6 +584,44 @@ class UnSupervisedIOHMM(BaseIOHMM):
         self.EM_tol = EM_tol
         self.max_EM_iter = max_EM_iter
 
+    def viterbi(self):
+        """
+        The Viterbi algorithm to find the most likely sequence of hidden states
+        Use log_prob_transition to find the most probable hidden state sequence.
+        """
+        log_prob_initial = self.log_prob_initial
+        log_prob_transition = self.log_prob_transition
+        log_Ey = self.log_Ey
+        log_state={}
+
+        assert log_prob_initial.ndim == 1
+        assert log_prob_transition.ndim == 3
+        assert log_Ey.ndim == 2
+        t = log_Ey.shape[0]
+        k = log_Ey.shape[1]
+        log_alpha = np.zeros((t, k))
+        if 0 in log_state:
+            log_alpha[0, :] = log_state[0] + log_Ey[0, :]
+        else:
+            log_alpha[0, :] = log_prob_initial + log_Ey[0, :]
+        for i in range(1, t):
+            if i in log_state:
+                log_alpha[i, :] = logsumexp(log_alpha[i - 1, :]) + log_state[i] + log_Ey[i, :]
+            else:
+                log_alpha[i, :] = logsumexp(log_prob_transition[i - 1, :, :].T +
+                                            log_alpha[i - 1, :], axis=1) + log_Ey[i, :]
+        assert log_alpha.shape == (t, k)
+
+        path = np.zeros(t, dtype=int)
+        path[t-1] = np.argmax(log_alpha[t-1])
+        for i in range(t-2, -1, -1):
+            path[i] = np.argmax(log_prob_transition[i, :, path[i+1]] + log_alpha[i, :])
+
+        return path
+
+
+    
+
     def set_data(self, dfs):
         """
         Set data for the model
@@ -615,6 +663,7 @@ class UnSupervisedIOHMM(BaseIOHMM):
             }
         )
         return json_dict
+    
 
     @classmethod
     def _from_setup(
