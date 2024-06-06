@@ -38,9 +38,13 @@ Note:
 
 # //TODO in future add arguments compatibility check
 
-from __future__ import division
+# from __future__ import division
 
+<<<<<<< HEAD
 #from future import standard_library
+=======
+# from future import standard_library
+>>>>>>> 3fcc6decb330fe2ea671c080b37cae87508b528d
 
 from builtins import range
 from builtins import object
@@ -58,7 +62,11 @@ from sklearn.preprocessing import label_binarize
 import statsmodels.api as sm
 from statsmodels.genmod.families import Poisson, Binomial
 from statsmodels.tools import add_constant
+<<<<<<< HEAD
 #standard_library.install_aliases()
+=======
+# standard_library.install_aliases()
+>>>>>>> 3fcc6decb330fe2ea671c080b37cae87508b528d
 EPS = np.finfo(float).eps
 
 

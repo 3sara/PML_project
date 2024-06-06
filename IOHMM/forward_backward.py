@@ -11,7 +11,7 @@ which is necessary due to dynamic programming (DP).
 Another feature of this implementation is that it is calculated at the log level,
 so that it is more robust to long sequences.
 '''
-from __future__ import division
+# from __future__ import division
 
 from builtins import range
 import warnings
