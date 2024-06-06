@@ -40,12 +40,6 @@ Note:
 
 # from __future__ import division
 
-<<<<<<< HEAD
-#from future import standard_library
-=======
-# from future import standard_library
->>>>>>> 3fcc6decb330fe2ea671c080b37cae87508b528d
-
 from builtins import range
 from builtins import object
 import pickle as pickle

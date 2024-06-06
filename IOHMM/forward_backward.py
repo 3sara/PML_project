@@ -1,3 +1,4 @@
+
 '''
 The forward backward algorithm of hidden markov model (HMM) .
 Mainly used in the E-step of IOHMM given the
@@ -107,6 +108,72 @@ def forward(log_prob_initial, log_prob_transition, log_Ey, log_state={}):
                                         log_alpha[i - 1, :], axis=1) + log_Ey[i, :]
     assert log_alpha.shape == (t, k)
     return log_alpha
+
+def viterbi(log_prob_initial, log_prob_transition, log_Ey, log_state={}, backtrack=True):
+        """
+        The Viterbi function to calculate the most likely sequence of hidden states.
+        
+        Parameters
+        ----------
+        log_prob_initial : array-like of shape (k, )
+            The log of the probability of initial state at timestamp 0.
+        log_prob_transition : array-like of shape (t-1, k, k)
+            The log of the probability of transitioning between states.
+        log_Ey : array-like of shape (t, k)
+            The log of the probability of observing emissions from each state at each timestamp.
+        log_state: dict(int -> array-like of shape (k, ))
+            Optional parameter for providing known states at certain timestamps.
+            Used in semi-supervised and supervised IOHMMs.
+        backtrack : bool
+            Whether to return the most likely sequence of states along with the log probabilities.
+            
+        Returns
+        -------
+        log_path_probs : array-like of shape (t, k)
+            Logarithm of the most likely path probabilities.
+        path : list of int
+            The most likely sequence of states if `backtrack` is True.
+        """
+        assert log_prob_initial.ndim == 1
+        assert log_prob_transition.ndim == 3
+        assert log_Ey.ndim == 2
+        
+        t = log_Ey.shape[0]
+        k = log_Ey.shape[1]
+        
+        # Initialize the Viterbi matrix
+        viterbi_matrix = np.zeros((t, k))
+        path_matrix = np.zeros((t, k), dtype=int)
+        
+        if 0 in log_state:
+            viterbi_matrix[0, :] = log_state[0] + log_Ey[0, :]
+        else:
+            viterbi_matrix[0, :] = log_prob_initial + log_Ey[0, :]
+        
+        for i in range(1, t):
+            if i in log_state:
+                viterbi_matrix[i, :] = logsumexp(viterbi_matrix[i - 1, :]) + log_state[i] + log_Ey[i, :]
+            else:
+                print(logsumexp(viterbi_matrix[i - 1, :] + log_prob_transition[i - 1, :, :], axis=1)
+)
+                max_logprob, prev_state = logsumexp(viterbi_matrix[i - 1, :] + log_prob_transition[i - 1, :, :], axis=1)
+                viterbi_matrix[i, :] = max_logprob + log_Ey[i, :]
+                path_matrix[i, :] = prev_state
+            
+        # Find the final state with the highest probability
+        final_state = np.argmax(viterbi_matrix[-1, :])
+        
+        # Backtrack to find the most likely sequence of states
+        if backtrack:
+            path = []
+            current_state = final_state
+            for i in reversed(range(t)):
+                path.append(current_state)
+                current_state = path_matrix[i, current_state]
+            path.reverse()
+            return viterbi_matrix[:, final_state], path[::-1]
+        else:
+            return viterbi_matrix[:, final_state]
 
 
 def backward(log_prob_transition, log_Ey, log_state={}):
