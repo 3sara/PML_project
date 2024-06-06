@@ -62,11 +62,7 @@ from sklearn.preprocessing import label_binarize
 import statsmodels.api as sm
 from statsmodels.genmod.families import Poisson, Binomial
 from statsmodels.tools import add_constant
-<<<<<<< HEAD
-#standard_library.install_aliases()
-=======
 # standard_library.install_aliases()
->>>>>>> 3fcc6decb330fe2ea671c080b37cae87508b528d
 EPS = np.finfo(float).eps
 
 
