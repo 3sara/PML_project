@@ -23,22 +23,29 @@ class IOHMM_model:
         # emission matrix: the coefficients for a linear regression model, size is (num_states, outputs.shape[0])
         # self.emission_matrix = 2 * torch.rand(num_states, inputs.shape[1], dtype=torch.float32) -1
 
-        # self.sd = torch.ones(num_states)
-        
-
         self.initial_pi = nn.Parameter(torch.ones(num_states)/num_states, requires_grad=True)
-        # TODO: one dimension more for the intercept!
         self.transition_matrix = nn.Parameter(torch.randn(num_states, num_states, inputs.shape[1]+1), requires_grad=True)
-        # TODO: one dimension more for the intercept!
         self.emission_matrix = nn.Parameter(torch.randn(num_states, inputs.shape[1]+1), requires_grad=True)
         self.sd = nn.Parameter(torch.ones(num_states), requires_grad=True)
 
 
-    def softmax(self, input, state):
+    def softmax_(self, input, state):
         with torch.no_grad():
-            # concat 1 to the input vector for the intercept
             return torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))) / torch.sum(torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))))
                 
+    def softmax(self, input):
+        # Concatenate 1 to the beginning of the input
+        input_with_bias = torch.cat((torch.tensor([1.0]), input))
+
+        # Compute transition probabilities for all states
+        transition_logits = self.transition_matrix @ input_with_bias
+
+        # Compute softmax probabilities
+        exp_logits = torch.exp(transition_logits)
+        softmax_probs = exp_logits / torch.sum(exp_logits, dim=1, keepdim=True)
+
+        return softmax_probs
+
     def dnorm(self, x, mean, sd):
         with torch.no_grad():
             return torch.exp(-0.5 * ((x - mean) / sd) ** 2) / (sd * torch.sqrt(torch.tensor(2 * np.pi)))
@@ -53,25 +60,25 @@ class IOHMM_model:
 
             # Initialize base cases (t == 0)
             # i think this can be parallelized
-            for i in range(N):
-                # TODO: concat 1 to U[0] for the intercept
-                emission_prob = self.dnorm(self.outputs[0], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]),U[0]))), self.sd[i])
-                alpha[0, i] = self.initial_pi[i] * emission_prob
+            # for i in range(N):
+            #    emission_prob = self.dnorm(self.outputs[0], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]),U[0]))), self.sd[i])
+            #    alpha[0, i] = self.initial_pi[i] * emission_prob
+            
+            # parallel version
+            emission_prob = self.dnorm(self.outputs[0], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[0]))), self.sd)
             # to normalize
+            alpha[0] = self.initial_pi * emission_prob
             alpha[0] /= torch.sum(alpha[0])
 
             # Compute forward probabilities (t > 0)
             for t in range(1, T):
                 # i think this can be parallelized
-                for j in range(N):
-                    sum = 0
-                    # TODO: concat 1 to U[0] for the intercept
-                    emission_prob = self.dnorm(self.outputs[t], self.emission_matrix[j].dot(torch.cat((torch.tensor([1.0]),U[t]))), self.sd[j])
-                    for i in range(N):
-                        transition_prob = self.softmax(U[t-1], i)
-                        sum += alpha[t-1, i] * transition_prob[j]
-                    alpha[t, j] = sum * emission_prob
-                # to normalize
+                emission_prob = self.dnorm(self.outputs[t], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[t]))), self.sd)
+                transition_prob = self.softmax(U[t-1])
+                # sum on the columns of transition_prob, quite sure about axis = 0
+                transition_prob = torch.sum(transition_prob, axis=0)
+                alpha[t] = emission_prob * transition_prob
+                # to normalize                
                 alpha[t] /= torch.sum(alpha[t])
 
             return alpha
@@ -86,28 +93,25 @@ class IOHMM_model:
             beta = torch.zeros((T, N))
 
             # Initialize base cases (t == T-1)
-            # can be parallelized
-            for i in range(N):
-                # TODO: concat 1 to U[0] for the intercept
-                emission_prob = self.dnorm(self.outputs[-1], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]),U[-1]))), self.sd[i])
-                beta[-1, i] =  emission_prob  # The initial beta value is 1, then scaled by emission probability
-            # Normalize
+            # parallel version
+            emission_prob = self.dnorm(self.outputs[-1], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[0]))), self.sd)
+            # to normalize
+            beta[-1] = emission_prob
             beta[-1] /= torch.sum(beta[-1])
 
-            # Compute backward probabilities (t < T-1)
+                        # Compute forward probabilities (t > 0)
             for t in reversed(range(T-1)):
-                for j in range(N):
-                    sum = 0
-                    # TODO: concat 1 to U[0] for the intercept
-                    emission_prob = self.dnorm(self.outputs[t+1], self.emission_matrix[j].dot(torch.cat((torch.tensor([1.0]),U[t+1]))), self.sd[j])
-                    for i in range(N):
-                        transition_prob = self.softmax(U[t], i)
-                        sum += beta[t+1, i] * transition_prob[j]
-                    beta[t, j] = sum * emission_prob
-                # Normalize
+                # i think this can be parallelized
+                emission_prob = self.dnorm(self.outputs[t+1], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[t+1]))), self.sd)
+                transition_prob = self.softmax(U[t])
+                # sum on the columns of transition_prob, quite sure about axis = 0
+                transition_prob = torch.sum(transition_prob, axis=0)
+                beta[t] = emission_prob * transition_prob
+                # to normalize                
                 beta[t] /= torch.sum(beta[t])
 
             return beta
+
 
     def _compute_gamma(self, alpha=None, beta=None):
         with torch.no_grad():
@@ -128,9 +132,13 @@ class IOHMM_model:
 
             for t in range(0, T):
                 for i in range(N):
-                    for j in range(N):
-                        transition_prob = self.softmax(U[t], j)
-                        xi[t, i, j] = (beta[t, i] * alpha[t-1, j] * transition_prob[i]) / torch.sum(alpha[T-1])
+                    #for j in range(N):
+                    #    transition_prob = self.softmax(U[t], j)
+                    #    xi[t, i, j] = (beta[t, i] * alpha[t-1, j] * transition_prob[i]) / torch.sum(alpha[T-1])
+                    transition_prob = self.softmax(U[t])
+                    transition_prob = torch.sum(transition_prob, axis=0)
+                    xi[t, i, :] = beta[t] * alpha[t-1] * transition_prob / torch.sum(alpha[T-1])
+
 
             # normalize
             a = torch.sum(xi, axis=1) 
@@ -149,11 +157,13 @@ class IOHMM_model:
         # Emission log likelihood
         for t in range(len(self.outputs)):
             for i in range(self.num_states):
-                # TODO: concat 1 to U[0] for the intercept
-                
                 likelihood += gamma[t, i] * torch.log(self.dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd[i]))
                 for j in range(self.num_states):
-                    likelihood += xi[t, i, j] * torch.log(self.softmax(self.inputs[t], j))[i]
+                    likelihood += xi[t, i, j] * torch.log(self.softmax_(self.inputs[t], j))[i]
+                # transition_prob = self.softmax(self.inputs[t])
+                # transition_prob = torch.sum(transition_prob, axis=0)
+                # likelihood += torch.sum(xi[t, i, :] * torch.log(self.softmax(self.inputs[t]))[i])
+
 
         # missing a sum over p, but not clear what p is :(
         return likelihood
