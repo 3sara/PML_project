@@ -201,9 +201,51 @@ class IOHMM_model:
                     break
                 old_log_likelihood = new_log_likelihood
 
-
+    '''
     def viterbi(self):
-        pass
+
+        prob=np.zeros((len(self.outputs),self.num_states))
+        path=np.zeros((len(self.outputs),self.num_states))
+        #initialize the first state
+        for i in range(self.num_states):
+            prob[0,i]=self.initial_pi[i]*self.dnorm(self.outputs[0], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[0]))), self.sd[i])
+
+        # parallel version... magari
+        #prob[0] = self.dnorm(self.outputs[0], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),self.inputs[0])), self.sd))
+        
+        #complete the matrixes
+        for t in range(1,len(self.outputs)):
+            for i in range(self.num_states):
+                prob[t,i]=np.max(prob[t-1,:]*self.softmax(self.inputs[t])[i]*self.dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd[i]))
+                path[t,i]=np.argmax(prob[t-1,:]*self.softmax(self.inputs[t])[i]*self.dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd[i]))
+        
+        state_sequence=np.zeros(len(self.outputs))
+        state_sequence[-1]=np.argmax(prob[-1,:])
+        for t in range(len(self.outputs)-2,-1,-1):
+            state_sequence[t]=path[t+1,state_sequence[t+1]]
+        return state_sequence
+    '''
+    def viterbi(self):
+        with torch.no_grad():
+            prob = torch.zeros((len(self.outputs),self.num_states))
+            path = torch.zeros((len(self.outputs), self.num_states), dtype=torch.long)  # Use long for indexing
+            
+            emission_prob = self.dnorm(self.outputs[0], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),self.inputs[0]))), self.sd)
+            # to normalize
+            prob[0] = self.initial_pi * emission_prob
+            # Complete the matrices
+            for t in range(1, len(self.outputs)):
+                    transition_prob = self.softmax(self.inputs[t])  # Ensure softmax is applied correctly
+                    transition_prob = torch.sum(transition_prob, axis=0)
+                    prob[t] = torch.max(prob[t - 1, :] * transition_prob * self.dnorm(self.outputs[t], self.emission_matrix @ (torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd))
+                    path[t] = torch.argmax(prob[t - 1, :] * transition_prob * self.dnorm(self.outputs[t], self.emission_matrix@ (torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd))
+            
+            state_sequence = torch.zeros(len(self.outputs), dtype=torch.long)  # Use long for indexing
+            state_sequence[-1] = torch.argmax(prob[-1, :])
+            for t in range(len(self.outputs) - 2, -1, -1):
+                state_sequence[t] = path[t + 1, state_sequence[t + 1]]
+        
+        return state_sequence
 
     def predict(self, input):
         #given the input compute the most likely nexy hidden state
