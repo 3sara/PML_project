@@ -200,6 +200,9 @@ class IOHMM_model:
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
                     break
                 old_log_likelihood = new_log_likelihood
+        
+
+    
 
     '''
     def viterbi(self):
@@ -226,6 +229,7 @@ class IOHMM_model:
         return state_sequence
     '''
     def viterbi(self):
+        
         with torch.no_grad():
             prob = torch.zeros((len(self.outputs),self.num_states))
             path = torch.zeros((len(self.outputs), self.num_states), dtype=torch.long)  # Use long for indexing
@@ -247,32 +251,18 @@ class IOHMM_model:
         
         return state_sequence
 
-    def predict(self, input):
-        #given the input compute the most likely nexy hidden state
-        w=np.zeros(self.num_states)
-        alpha=self._forward()
-        for state in range(self.num_states):
-            w[state]=torch.sum(alpha[-1]*self.softmax(input)[state])  
+    def predict(self, future_input):
+        # Future output is the expected output given the future input
+        future_output = torch.zeros(future_input.shape[0])
 
-        # print the shapes of emission_matrix, input and w
-        print(self.emission_matrix.shape)
-        print(input.shape)
-        print(w.shape)  
-        prediction=(self.emission_matrix*input).dot(w)
-        return prediction
-    
-        
-        #for state in range(self.num_states):
-            #print(self.softmax(input)*alpha[-1, state])
-            #w[state] += self.softmax(input)*alpha[-1, state]
-        
-        #compute the multiplication of the emission matrix and the input  
-        #prediction=(self.emission_matrix*input).dot(w)
-        #return prediction
+        for input in future_input:
+            transition_prob = self.softmax(input)
+            transition_prob = torch.sum(transition_prob, axis=0)
+            state = torch.argmax(transition_prob)
+            future_output += self.emission_matrix[state].dot(torch.cat((torch.tensor([1.0]), input)))
+                
 
-
-
-
+        return future_output
 
 
 """
