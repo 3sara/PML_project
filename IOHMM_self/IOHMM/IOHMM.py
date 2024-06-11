@@ -260,7 +260,6 @@ class IOHMM_model:
         print(w.shape)  
         prediction=(self.emission_matrix*input).dot(w)
         return prediction
-s
     
         
         #for state in range(self.num_states):
