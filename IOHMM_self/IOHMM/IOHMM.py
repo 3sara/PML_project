@@ -249,15 +249,27 @@ class IOHMM_model:
 
     def predict(self, input):
         #given the input compute the most likely nexy hidden state
+        w=np.zeros(self.num_states)
         alpha=self._forward()
-        last_states=alpha[-1]
-        w = torch.zeros(self.num_states)
         for state in range(self.num_states):
-            w[state] += self.softmax(input, state)*alpha[-1, state]
-        
-        #compute the multiplication of the emission matrix and the input  
+            w[state]=torch.sum(alpha[-1]*self.softmax(input)[state])  
+
+        # print the shapes of emission_matrix, input and w
+        print(self.emission_matrix.shape)
+        print(input.shape)
+        print(w.shape)  
         prediction=(self.emission_matrix*input).dot(w)
         return prediction
+s
+    
+        
+        #for state in range(self.num_states):
+            #print(self.softmax(input)*alpha[-1, state])
+            #w[state] += self.softmax(input)*alpha[-1, state]
+        
+        #compute the multiplication of the emission matrix and the input  
+        #prediction=(self.emission_matrix*input).dot(w)
+        #return prediction
 
 
 
