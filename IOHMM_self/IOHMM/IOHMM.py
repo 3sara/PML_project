@@ -157,7 +157,7 @@ class IOHMM_model:
         # Emission log likelihood
         for t in range(len(self.outputs)):
             for i in range(self.num_states):
-                likelihood += gamma[t, i] * torch.log(self.dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd[i]))
+                likelihood += gamma[t, i] * torch.log(self.dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd[i])).item()
                 for j in range(self.num_states):
                     likelihood += xi[t, i, j] * torch.log(self.softmax_(self.inputs[t], j))[i]
                 # transition_prob = self.softmax(self.inputs[t])
@@ -169,7 +169,9 @@ class IOHMM_model:
         return likelihood
 
     def _baum_welch(self):
-        optimizer = optim.LBFGS([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=0.01)
+        # sgd not good, better 
+        optimizer = optim.SGD([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=0.01)
+        
         gamma = torch.zeros((len(self.outputs), self.num_states))
         xi = torch.zeros((len(self.outputs), self.num_states, self.num_states))
         
@@ -200,6 +202,9 @@ class IOHMM_model:
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
                     break
                 old_log_likelihood = new_log_likelihood
+            print(i)
+        print("convergence not reached")
+        
         
 
     
