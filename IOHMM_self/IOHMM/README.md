@@ -12,3 +12,13 @@ site: https://adeveloperdiary.com/data-science/machine-learning/derivation-and-i
 
 to find out how to use the alpha and beta to compute gamma and xi for computing the likelihood
 
+
+POSSIBLE EXTENSIONS:
+
+online learning: don't re-compute all the coeffcients when new data come in
+
+improve training, use matrices operations instead of for
+don't use torch for optimisation, try to use the derivatives written in the article
+
+predicition for more than one obs
+

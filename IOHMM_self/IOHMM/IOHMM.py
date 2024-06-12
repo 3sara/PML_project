@@ -78,8 +78,8 @@ class IOHMM_model:
                 # sum on the columns of transition_prob, quite sure about axis = 0
                 transition_prob = torch.sum(transition_prob, axis=0)
                 alpha[t] = emission_prob * transition_prob
-                # to normalize                
-                alpha[t] /= torch.sum(alpha[t])
+                # maybe better no to normalize for performance                
+                # alpha[t] /= torch.sum(alpha[t])
 
             return alpha
 
@@ -107,8 +107,8 @@ class IOHMM_model:
                 # sum on the columns of transition_prob, quite sure about axis = 0
                 transition_prob = torch.sum(transition_prob, axis=0)
                 beta[t] = emission_prob * transition_prob
-                # to normalize                
-                beta[t] /= torch.sum(beta[t])
+                # maybe better no to normalize for performance                
+                # beta[t] /= torch.sum(beta[t])
 
             return beta
 
@@ -165,7 +165,7 @@ class IOHMM_model:
                 # likelihood += torch.sum(xi[t, i, :] * torch.log(self.softmax(self.inputs[t]))[i])
 
 
-        # missing a sum over p, but not clear what p is :(
+        # missing a sum over p, that are different sequnces of hmm, but we are assuming only one sequence
         return likelihood
 
     def _baum_welch(self):
