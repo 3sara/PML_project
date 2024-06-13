@@ -5,19 +5,33 @@ import numpy as np
 import torch.optim.lr_scheduler as lr_scheduler
 
 class IOHMM_model:
-    def __init__(self, num_states, inputs, outputs, max_iter, tol):
+    def __init__(self, num_states, inputs, outputs, max_iter, tol, initial_pi=None, transition_matrix=None, emission_matrix=None, sd=None):
         self.num_states = num_states
         self.inputs = inputs
         self.outputs = outputs
         self.max_iter = max_iter
         self.tol = tol
 
-        self.initial_pi = nn.Parameter(torch.ones(num_states) / num_states, requires_grad=True)
-        self.transition_matrix = nn.Parameter(torch.randn(num_states, num_states, inputs.shape[1] + 1), requires_grad=True)
-        # self.transition_matrix = nn.Parameter(torch.ones(num_states, num_states, inputs.shape[1] + 1), requires_grad=True) / num_states
-        self.emission_matrix = nn.Parameter(torch.randn(num_states, inputs.shape[1] + 1), requires_grad=True)
-        # self.emission_matrix = nn.Parameter(torch.ones(num_states, inputs.shape[1] + 1), requires_grad=True) / num_states
-        self.sd = nn.Parameter(torch.ones(num_states), requires_grad=True)
+        if initial_pi is not None:
+            # self.initial_pi = initial_pi
+            self.initial_pi = nn.Parameter(initial_pi, requires_grad=True)
+        else:
+            self.initial_pi = nn.Parameter(torch.ones(num_states) / num_states, requires_grad=True)
+            # self.initial_pi = torch.ones(num_states) / num_states
+        if transition_matrix is not None:
+            self.transition_matrix = nn.Parameter(transition_matrix, requires_grad=True)
+        else:
+            self.transition_matrix = nn.Parameter(torch.randn(num_states, num_states, inputs.shape[1] + 1), requires_grad=True)
+        if emission_matrix is not None:
+            self.emission_matrix = nn.Parameter(emission_matrix, requires_grad=True)
+        else:
+            self.emission_matrix = nn.Parameter(torch.randn(num_states, inputs.shape[1] + 1), requires_grad=True)
+        if sd is not None:
+            self.sd = nn.Parameter(sd, requires_grad=True)
+        else:
+            # setting a higher sd was fundamental to make the model stable, otherwise the emission prob would be zero
+            self.sd = nn.Parameter(5.0*torch.ones(num_states), requires_grad=True)
+
 
     def softmax(self, input, state):
         with torch.no_grad():
@@ -25,7 +39,7 @@ class IOHMM_model:
 
     def dnorm(self, x, mean, sd):
         with torch.no_grad():
-            return torch.exp(-0.5 * ((x - mean) / sd) ** 2) / (sd * torch.sqrt(torch.tensor(2 * np.pi)))
+            return torch.exp(-0.5 * ((x - mean) / sd) ** 2) / (sd * torch.sqrt(torch.tensor(2 * torch.pi)))
 
     def _forward(self):
         with torch.no_grad():
@@ -43,7 +57,9 @@ class IOHMM_model:
             for t in range(1, T):
                 for j in range(N):
                     sum = 0
+                    #print(self.outputs[t], U[t] ,self.emission_matrix[j].dot(torch.cat((torch.tensor([1.0]), U[t]))))
                     emission_prob = self.dnorm(self.outputs[t], self.emission_matrix[j].dot(torch.cat((torch.tensor([1.0]), U[t]))), self.sd[j])
+                    #print(emission_prob)
                     for i in range(N):
                         transition_prob = self.softmax(U[t], i)
                         sum += alpha[t - 1, i] * transition_prob[j]
@@ -118,8 +134,9 @@ class IOHMM_model:
 
     def _baum_welch(self):
         # sgd not good, better LBFGS
-        optimizer = optim.LBFGS([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=1.0)
-        scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)  # Decrease lr by 0.9 every 1 steps
+        # optimizer = optim.LBFGS([self.transition_matrix, self.emission_matrix, self.sd], lr=1.0)
+        optimizer = optim.LBFGS([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=5.0)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)  # Decrease lr by 0.9 every 5 steps
 
         old_log_likelihood = -torch.inf
 
@@ -139,6 +156,7 @@ class IOHMM_model:
                 return loss
 
             optimizer.step(closure)
+            scheduler.step()
             
             with torch.no_grad():
                 new_log_likelihood = self._log_likelihood(gamma, xi)
@@ -146,6 +164,7 @@ class IOHMM_model:
                 # Check for convergence
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
                     print("convergence reached :)")
+                    print(new_log_likelihood.item())
                     break
                 old_log_likelihood = new_log_likelihood
             print(i + 1, new_log_likelihood.item())
