@@ -34,6 +34,7 @@ class IOHMM_model:
             return torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))) / torch.sum(torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))))
                 
     def softmax(self, input):
+        
         # Concatenate 1 to the beginning of the input
         input_with_bias = torch.cat((torch.tensor([1.0]), input))
 
@@ -59,12 +60,6 @@ class IOHMM_model:
             alpha = torch.zeros((T, N))
 
             # Initialize base cases (t == 0)
-            # i think this can be parallelized
-            # for i in range(N):
-            #    emission_prob = self.dnorm(self.outputs[0], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]),U[0]))), self.sd[i])
-            #    alpha[0, i] = self.initial_pi[i] * emission_prob
-            
-            # parallel version
             emission_prob = self.dnorm(self.outputs[0], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[0]))), self.sd)
             # to normalize
             alpha[0] = self.initial_pi * emission_prob
@@ -72,14 +67,14 @@ class IOHMM_model:
 
             # Compute forward probabilities (t > 0)
             for t in range(1, T):
-                # i think this can be parallelized
                 emission_prob = self.dnorm(self.outputs[t], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[t]))), self.sd)
-                transition_prob = self.softmax(U[t-1])
+                transition_prob = self.softmax(U[t])
                 # sum on the columns of transition_prob, quite sure about axis = 0
+                transition_prob *= alpha[t-1].unsqueeze(1)
                 transition_prob = torch.sum(transition_prob, axis=0)
                 alpha[t] = emission_prob * transition_prob
-                # maybe better no to normalize for performance                
-                # alpha[t] /= torch.sum(alpha[t])
+                # normalize
+                alpha[t] /= torch.sum(alpha[t])
 
             return alpha
 
@@ -94,21 +89,21 @@ class IOHMM_model:
 
             # Initialize base cases (t == T-1)
             # parallel version
-            emission_prob = self.dnorm(self.outputs[-1], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[0]))), self.sd)
+            emission_prob = self.dnorm(self.outputs[-1], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[-1]))), self.sd)
             # to normalize
             beta[-1] = emission_prob
             beta[-1] /= torch.sum(beta[-1])
 
-                        # Compute forward probabilities (t > 0)
+            # Compute forward probabilities (t > 0)
             for t in reversed(range(T-1)):
-                # i think this can be parallelized
-                emission_prob = self.dnorm(self.outputs[t+1], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[t+1]))), self.sd)
+                emission_prob = self.dnorm(self.outputs[t], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[t]))), self.sd)
                 transition_prob = self.softmax(U[t])
+                transition_prob *= beta[t+1].unsqueeze(1)
                 # sum on the columns of transition_prob, quite sure about axis = 0
                 transition_prob = torch.sum(transition_prob, axis=0)
                 beta[t] = emission_prob * transition_prob
-                # maybe better no to normalize for performance                
-                # beta[t] /= torch.sum(beta[t])
+                # normlize
+                beta[t] /= torch.sum(beta[t])
 
             return beta
 
@@ -118,6 +113,7 @@ class IOHMM_model:
             # in the paper it says that zeta_it = P(x_t=i | all obs of inputs from 0 to t)
             # so it should simply be alpha, but not sure
             gamma = alpha * beta
+            # normalize
             gamma /= torch.sum(gamma, axis=1).reshape(-1, 1)
             return gamma
 
@@ -131,55 +127,44 @@ class IOHMM_model:
             xi = torch.zeros((T, N, N))
 
             for t in range(0, T):
-                for i in range(N):
-                    #for j in range(N):
-                    #    transition_prob = self.softmax(U[t], j)
-                    #    xi[t, i, j] = (beta[t, i] * alpha[t-1, j] * transition_prob[i]) / torch.sum(alpha[T-1])
-                    transition_prob = self.softmax(U[t])
-                    transition_prob = torch.sum(transition_prob, axis=0)
-                    xi[t, i, :] = beta[t] * alpha[t-1] * transition_prob / torch.sum(alpha[T-1])
-
+                transition_prob = self.softmax(U[t]).T
+                # transpose to maintain the same notation of the article, in the row next state, in the columns previous state
+                #print(f"transition prob: {transition_prob}")
+                #print(f"alpha[t-1]: {alpha[t-1]}")
+                #print(f"beta[t]: {beta[t]}")
+                # not sure if i have to unsqueeze alpha or beta, is it the same?
+                xi[t, :, :] = transition_prob * beta[t].unsqueeze(1) * alpha[t-1]
 
             # normalize
-            a = torch.sum(xi, axis=1) 
+            a = torch.sum(xi, axis=1)
             a = torch.sum(a, axis=1)
-            a = a[:, None, None]
-            xi /= a
+            xi /= a[:, None, None]
             return xi
-
-
+    
+    # version to parallelize
     def _log_likelihood(self, gamma, xi):
         likelihood = 0
 
-        # Initial state log likelihood
         likelihood += torch.sum(gamma[0] * torch.log(self.initial_pi))
 
-        # Emission log likelihood
         for t in range(len(self.outputs)):
             for i in range(self.num_states):
-                likelihood += gamma[t, i] * torch.log(self.dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd[i])).item()
+                likelihood += gamma[t, i] * torch.log(self.dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd[i]))
                 for j in range(self.num_states):
                     likelihood += xi[t, i, j] * torch.log(self.softmax_(self.inputs[t], j))[i]
-                # transition_prob = self.softmax(self.inputs[t])
-                # transition_prob = torch.sum(transition_prob, axis=0)
-                # likelihood += torch.sum(xi[t, i, :] * torch.log(self.softmax(self.inputs[t]))[i])
 
-
-        # missing a sum over p, that are different sequnces of hmm, but we are assuming only one sequence
         return likelihood
 
+
+
     def _baum_welch(self):
-        # sgd not good, better 
-        optimizer = optim.SGD([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=0.01)
-        
-        gamma = torch.zeros((len(self.outputs), self.num_states))
-        xi = torch.zeros((len(self.outputs), self.num_states, self.num_states))
+        # sgd not good, better LBFGS
+        optimizer = optim.LBFGS([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=0.01)
         
         old_log_likelihood = -torch.inf
 
         for i in range(self.max_iter):
             # E-step: Compute the posterior probabilities
-
 
             alpha = self._forward()
             beta = self._backward()
@@ -200,16 +185,94 @@ class IOHMM_model:
                 
                 # Check for convergence
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
+                    print("convergence reached :)")
                     break
                 old_log_likelihood = new_log_likelihood
             print(i)
-        print("convergence not reached")
+        if i == self.max_iter:    
+            print("convergence not reached")
+
+    def viterbi(self):
+        
+        with torch.no_grad():
+            prob = torch.zeros((len(self.outputs),self.num_states))
+            path = torch.zeros((len(self.outputs), self.num_states), dtype=torch.long)  # Use long for indexing
+            
+            emission_prob = self.dnorm(self.outputs[0], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),self.inputs[0]))), self.sd)
+            # to normalize
+            prob[0] = self.initial_pi * emission_prob
+            # Complete the matrices
+            for t in range(1, len(self.outputs)):
+                    transition_prob = self.softmax(self.inputs[t])  # Ensure softmax is applied correctly
+                    transition_prob = torch.sum(transition_prob, axis=0)
+                    prob[t] = torch.max(prob[t - 1, :] * transition_prob * self.dnorm(self.outputs[t], self.emission_matrix @ (torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd))
+                    path[t] = torch.argmax(prob[t - 1, :] * transition_prob * self.dnorm(self.outputs[t], self.emission_matrix@ (torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.sd))
+            
+            state_sequence = torch.zeros(len(self.outputs), dtype=torch.long)  # Use long for indexing
+            state_sequence[-1] = torch.argmax(prob[-1, :])
+            for t in range(len(self.outputs) - 2, -1, -1):
+                state_sequence[t] = path[t + 1, state_sequence[t + 1]]
+        
+        return state_sequence
+    
+
+    def predict(self, future_input):
+        # Future output is the expected output given the future input
+        future_output = torch.zeros(future_input.shape[0])
+
+        for input in future_input:
+            transition_prob = self.softmax(input)
+            transition_prob = torch.sum(transition_prob, axis=0)
+            state = torch.argmax(transition_prob)
+            future_output += self.emission_matrix[state].dot(torch.cat((torch.tensor([1.0]), input)))
+                
+
+        return future_output
         
         
+"""
+    def _log_likelihood(self, gamma, xi):
+        likelihood = 0
+
+        # Initial state log likelihood
+        likelihood += torch.sum(gamma[0] * torch.log(self.initial_pi))
+
+        # missing a sum over p, that are different sequnces of hmm, but we are assuming only one sequence
+        # Emission log likelihood
+        # ones = torch.ones((self.inputs.size(0), 1))
+
+        # Concatenate ones with self.inputs along the columns
+        # inputs_bias = torch.cat((ones, self.inputs), dim=1)  # Shape (T, N+1)
+
+        # Expand dimensions to ensure compatibility
+        # outputs_expanded = self.outputs[:, None]  # Shape (T, 1)
+        # inputs_bias_expanded = inputs_bias[:, None, :]  # Shape (T, 1, N+1)
+
+        # Compute the mean for dnorm
+        # mean = self.emission_matrix @ inputs_bias_expanded.transpose(1, 2)  # Shape (T, M, 1)
+
+        # Print log of dnorm
+        # print(torch.log(self.dnorm(outputs_expanded, mean.squeeze(-1), self.sd)))
+
+        # Update likelihood
+        # likelihood += torch.sum(gamma * torch.log(self.dnorm(outputs_expanded, mean.squeeze(-1), self.sd)))
+        
+        # likelihood += torch.sum(xi * torch.log(self.softmax(self.inputs)))
+
+        for t in range(len(self.outputs)):
+            print(torch.sum(gamma[t, :] * torch.log(self.dnorm(self.outputs[t], self.emission_matrix*(torch.cat((torch.tensor([1.0]), self.inputs[t])))[:,None], self.sd))))
+            print(torch.sum(xi[t, :, :] * torch.log(self.softmax(self.inputs[t]))))
+
+            likelihood += torch.sum(gamma[t, :] * torch.log(self.dnorm(self.outputs[t], self.emission_matrix*(torch.cat((torch.tensor([1.0]), self.inputs[t])))[:,None], self.sd)))
+
+            likelihood += torch.sum(xi[t, :, :] * torch.log(self.softmax(self.inputs[t])))
+
+        return likelihood
+
 
     
 
-    '''
+
     def viterbi(self):
 
         prob=np.zeros((len(self.outputs),self.num_states))
@@ -232,7 +295,8 @@ class IOHMM_model:
         for t in range(len(self.outputs)-2,-1,-1):
             state_sequence[t]=path[t+1,state_sequence[t+1]]
         return state_sequence
-    '''
+
+
     def viterbi(self):
         
         with torch.no_grad():
@@ -270,7 +334,7 @@ class IOHMM_model:
         return future_output
 
 
-"""
+
     def _baum_welch(self):
         theta_old = [self.initial_pi, self.transition_matrix, self.emission_matrix]
         for i in range(self.max_iter):
@@ -313,8 +377,3 @@ class IOHMM_model:
         return theta_new
 
 """
-
-
-
-
-
