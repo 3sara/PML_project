@@ -152,7 +152,6 @@ class IOHMM_model:
         return likelihood
 
 
-
     def _baum_welch(self):
         # sgd not good, better LBFGS
         optimizer = optim.LBFGS([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=0.01)
@@ -181,12 +180,19 @@ class IOHMM_model:
                 
                 # Check for convergence
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
-                    print("convergence reached :)")
+                    print("Convergence reached :)\n")
                     break
                 old_log_likelihood = new_log_likelihood
-            print(i)
+
+            print("Iteration: ", i,
+                  "\nInitial pi:\n", self.initial_pi,
+                  "\nTransition matrix:\n", self.transition_matrix,
+                  "\nEmission matrix:\n", self.emission_matrix,
+                  "\nStandard deviation:\n", self.sd)
+        
         if i == self.max_iter:    
-            print("convergence not reached")
+            print("Convergence not reached :(\n") 
+
 
     def viterbi(self):
         
@@ -212,18 +218,32 @@ class IOHMM_model:
         return state_sequence
     
 
-    def predict(self, future_input):
-        # Future output is the expected output given the future input
-        future_output = torch.zeros(future_input.shape[0])
+    def predict(self, u_t1):
+        """
+        Output prediction is defined as eta_t+1 . In particular
+            phi_ij_t+1 = P(X_t+1 = i | X_t = j, u_t+1)
+            phi_j_t+1 = softmax(theta_j @ u_t+1)
+            rho_i_t+1 = P(X_t+1 = i | u_1, ..., u_t+1) = sum_j(phi_ij_t+1 * rho_j_t)
+            eta_i_t = E[Y_t+1 | X_t+1 = i, u_t+1] = delta_i @ u_t+1
+            eta_t+1 = sum_i(rho_i_t+1 * eta_i_t+1)
+        
+        The theta_j are the transition matrix, the delta_i are the emission matrix.
+        """
 
-        for input in future_input:
-            transition_prob = self.softmax(input)
-            transition_prob = torch.sum(transition_prob, axis=0)
-            state = torch.argmax(transition_prob)
-            future_output += self.emission_matrix[state].dot(torch.cat((torch.tensor([1.0]), input)))
-                
 
-        return future_output
+        # Compute rho_i_t
+        rho_t = self._compute_gamma(self._forward(), self._backward())[-1]
+
+        # Compute rho_i_t+1
+        rho_t1 = torch.sum(self.softmax(u_t1) * rho_t, axis=1)
+        
+        # Compute eta_i_t
+        eta_i_t1 = self.emission_matrix @ torch.cat((torch.tensor([1.0]), u_t1))
+
+        # Compute eta_t+1
+        eta_t1 = torch.sum(rho_t1 * eta_i_t1)
+
+        return eta_t1
         
         
 """
