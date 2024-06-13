@@ -129,10 +129,6 @@ class IOHMM_model:
             for t in range(0, T):
                 transition_prob = self.softmax(U[t]).T
                 # transpose to maintain the same notation of the article, in the row next state, in the columns previous state
-                #print(f"transition prob: {transition_prob}")
-                #print(f"alpha[t-1]: {alpha[t-1]}")
-                #print(f"beta[t]: {beta[t]}")
-                # not sure if i have to unsqueeze alpha or beta, is it the same?
                 xi[t, :, :] = transition_prob * beta[t].unsqueeze(1) * alpha[t-1]
 
             # normalize
