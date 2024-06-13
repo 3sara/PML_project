@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import torch.optim.lr_scheduler as lr_scheduler
 
 class IOHMM_model:
     def __init__(self, num_states, inputs, outputs, max_iter, tol):
@@ -13,7 +14,9 @@ class IOHMM_model:
 
         self.initial_pi = nn.Parameter(torch.ones(num_states) / num_states, requires_grad=True)
         self.transition_matrix = nn.Parameter(torch.randn(num_states, num_states, inputs.shape[1] + 1), requires_grad=True)
+        # self.transition_matrix = nn.Parameter(torch.ones(num_states, num_states, inputs.shape[1] + 1), requires_grad=True) / num_states
         self.emission_matrix = nn.Parameter(torch.randn(num_states, inputs.shape[1] + 1), requires_grad=True)
+        # self.emission_matrix = nn.Parameter(torch.ones(num_states, inputs.shape[1] + 1), requires_grad=True) / num_states
         self.sd = nn.Parameter(torch.ones(num_states), requires_grad=True)
 
     def softmax(self, input, state):
@@ -114,18 +117,21 @@ class IOHMM_model:
         return likelihood
 
     def _baum_welch(self):
-        optimizer = optim.LBFGS([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=0.01)
-        gamma = torch.zeros((len(self.outputs), self.num_states))
-        xi = torch.zeros((len(self.outputs), self.num_states, self.num_states))
+        # sgd not good, better LBFGS
+        optimizer = optim.LBFGS([self.initial_pi, self.transition_matrix, self.emission_matrix, self.sd], lr=1.0)
+        scheduler = lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.9)  # Decrease lr by 0.9 every 1 steps
 
         old_log_likelihood = -torch.inf
 
         for i in range(self.max_iter):
+            # E-step: Compute the posterior probabilities
+
             alpha = self._forward()
             beta = self._backward()
             gamma = self._compute_gamma(alpha, beta)
             xi = self._compute_xi(alpha, beta)
 
+            # M-step
             def closure():
                 optimizer.zero_grad()
                 loss = -self._log_likelihood(gamma, xi)
@@ -133,16 +139,35 @@ class IOHMM_model:
                 return loss
 
             optimizer.step(closure)
-
+            
             with torch.no_grad():
                 new_log_likelihood = self._log_likelihood(gamma, xi)
-
+                
+                # Check for convergence
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
+                    print("convergence reached :)")
                     break
                 old_log_likelihood = new_log_likelihood
+            print(i + 1, new_log_likelihood.item())
+        if i == self.max_iter:    
+            print("convergence not reached")
 
     def viterbi(self):
-        pass
+        with torch.no_grad():
+            U = self.inputs
+
+            alpha = self._forward()
+            path = []
+            last_state = torch.argmax(alpha[-1])
+            path.append(last_state.item())
+
+            for i in reversed(range(len(self.outputs) - 1)):
+                transition_prob = self.softmax(U[i + 1], last_state)
+                last_state = torch.argmax(torch.log(transition_prob) + alpha[i])
+                path.append(last_state.item())
+
+            path.reverse()
+            return path
 
     def predict(self, input):
         pass
