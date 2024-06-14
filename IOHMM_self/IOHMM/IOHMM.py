@@ -29,21 +29,21 @@ class IOHMM_model:
             # self.initial_pi = initial_pi
             self.initial_pi = nn.Parameter(initial_pi, requires_grad=True)
         else:
-            self.initial_pi = nn.Parameter(torch.ones(num_states) / num_states, requires_grad=True)
+            self.initial_pi = nn.Parameter(torch.log(torch.ones(num_states)/num_states), requires_grad=True)
             # self.initial_pi = torch.ones(num_states) / num_states
         if transition_matrix is not None:
             self.transition_matrix = nn.Parameter(transition_matrix, requires_grad=True)
         else:
-            self.transition_matrix = nn.Parameter(torch.randn(num_states, num_states, inputs.shape[1] + 1), requires_grad=True)
+            self.transition_matrix = nn.Parameter(torch.log(torch.randn(num_states, num_states, inputs.shape[1] + 1)), requires_grad=True)
         if emission_matrix is not None:
             self.emission_matrix = nn.Parameter(emission_matrix, requires_grad=True)
         else:
-            self.emission_matrix = nn.Parameter(torch.randn(num_states, inputs.shape[1] + 1), requires_grad=True)
+            self.emission_matrix = nn.Parameter(torch.log(torch.randn(num_states, inputs.shape[1] + 1)), requires_grad=True)
         if lsd is not None:
             self.lsd = nn.Parameter(lsd, requires_grad=True)
         else:
             # setting a higher lsd was fundamental to make the model stable, otherwise the emission prob would be zero
-            self.lsd = nn.Parameter(5.0*torch.ones(num_states), requires_grad=True)
+            self.lsd = nn.Parameter(torch.log(5.0*torch.ones(num_states)), requires_grad=True)
 
 
     def softmax_(self, input, state):
@@ -60,14 +60,18 @@ class IOHMM_model:
             transition_logits = self.transition_matrix @ input_with_bias
 
             # Compute softmax probabilities
-            exp_logits = torch.exp(transition_logits)
-            softmax_probs = exp_logits / torch.sum(exp_logits, dim=1, keepdim=True)
+            #exp_logits = torch.exp(transition_logits)
+            #softmax_probs = exp_logits / torch.sum(exp_logits, dim=1, keepdim=True)
 
+            # Compute log softmax probabilities
+            softmax_probs = transition_logits - torch.logsumexp(transition_logits, dim=0)
             return softmax_probs
 
     def dnorm(self, x, mean, lsd):
+        # !!!!!!!!!!!! RETURNS THE LOG OF THE DENSITY NOT THE DENSITY ITSELF !!!!!!!!!!!!!!!
         with torch.no_grad():
-            return torch.exp(-0.5 * ((x - mean) / torch.exp(lsd)) ** 2) / (torch.exp(lsd) * torch.sqrt(torch.tensor(2 * np.pi)))
+        
+            return (-0.5 * ((x - mean) / torch.exp(lsd)) ** 2) - (lsd + torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
 
     def _forward(self):
         with torch.no_grad():
@@ -80,7 +84,7 @@ class IOHMM_model:
             # Initialize base cases (t == 0)
             emission_prob = self.dnorm(self.outputs[0], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[0]))), self.lsd)
             # to normalize
-            alpha[0] = self.initial_pi * emission_prob
+            alpha[0] = self.initial_pi + emission_prob
             alpha[0] /= torch.sum(alpha[0])
 
             # Compute forward probabilities (t > 0)
@@ -88,9 +92,9 @@ class IOHMM_model:
                 emission_prob = self.dnorm(self.outputs[t], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[t]))), self.lsd)
                 transition_prob = self.softmax(U[t])
                 # sum on the columns of transition_prob, quite sure about axis = 0
-                transition_prob *= alpha[t-1].unsqueeze(1)
+                transition_prob += alpha[t-1].unsqueeze(1)
                 transition_prob = torch.sum(transition_prob, axis=0)
-                alpha[t] = emission_prob * transition_prob
+                alpha[t] = emission_prob + transition_prob
                 # normalize
                 alpha[t] /= torch.sum(alpha[t])
 
@@ -116,10 +120,10 @@ class IOHMM_model:
             for t in reversed(range(T-1)):
                 emission_prob = self.dnorm(self.outputs[t], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[t]))), self.lsd)
                 transition_prob = self.softmax(U[t])
-                transition_prob *= beta[t+1].unsqueeze(1)
+                transition_prob += beta[t+1].unsqueeze(1)
                 # sum on the columns of transition_prob, quite sure about axis = 0
                 transition_prob = torch.sum(transition_prob, axis=0)
-                beta[t] = emission_prob * transition_prob
+                beta[t] = emission_prob + transition_prob
                 # normlize
                 beta[t] /= torch.sum(beta[t])
 
@@ -130,7 +134,7 @@ class IOHMM_model:
         with torch.no_grad():
             # in the paper it says that zeta_it = P(x_t=i | all obs of inputs from 0 to t)
             # so it should simply be alpha, but not sure
-            gamma = alpha * beta
+            gamma = alpha + beta
             # normalize
             gamma /= torch.sum(gamma, axis=1).reshape(-1, 1)
             return gamma
@@ -151,7 +155,7 @@ class IOHMM_model:
                 #print(f"alpha[t-1]: {alpha[t-1]}")
                 #print(f"beta[t]: {beta[t]}")
                 # not sure if i have to unsqueeze alpha or beta, is it the same?
-                xi[t, :, :] = transition_prob * beta[t].unsqueeze(1) * alpha[t-1]
+                xi[t, :, :] = transition_prob + beta[t].unsqueeze(1) + alpha[t-1]
 
             # S = torch.sum(alpha[T-1, :], axis=0)
             # xi /= S
@@ -165,28 +169,34 @@ class IOHMM_model:
     
     def _log_likelihood(self, gamma, xi):
         likelihood = 0
-        likelihood += torch.sum(gamma[0] * torch.log(self.initial_pi))
+        likelihood += torch.sum(torch.exp(gamma[0]) * self.initial_pi)
+        
         for t, output in enumerate(self.outputs):
+            
             # first term of the sum
 
-            x = self.emission_matrix @ (torch.cat((torch.tensor([1.0]), self.inputs[t])))
+            x = torch.exp(self.emission_matrix) @ (torch.cat((torch.tensor([1.0]), self.inputs[t])))
             mu = output
 
 
             dnorm = -0.5 * (((mu - x) / torch.exp(self.lsd)) ** 2) / (torch.exp(self.lsd) * torch.sqrt(torch.tensor(2 * np.pi)))
 
-            likelihood += torch.sum(gamma[t, :] * dnorm)
+            likelihood += torch.sum(torch.exp(gamma[t, :]) * dnorm)
             # second term of the sum
 
             # Concatenate 1 to the beginning of the input
             input_with_bias = torch.cat((torch.tensor([1.0]), self.inputs[t]))
             # Compute transition probabilities for all states
-            transition_logits = self.transition_matrix @ input_with_bias
+            transition_logits = torch.exp(self.transition_matrix) @ input_with_bias
             # Compute softmax probabilities
-            exp_logits = torch.exp(transition_logits)
-            softmax_probs = exp_logits / torch.sum(exp_logits, dim=1, keepdim=True)
+            #exp_logits = torch.exp(transition_logits)
+            #softmax_probs = exp_logits / torch.sum(exp_logits, dim=1, keepdim=True)
+
+
+            #compute directly log softmax probabilities
+            softmax_probs = transition_logits - torch.logsumexp(transition_logits, dim=0)
             # to check relation between xi and softmax
-            likelihood += torch.sum(xi[t, :, :] * torch.log(softmax_probs))
+            likelihood += torch.sum(torch.exp(xi[t, :, :]) * softmax_probs)
                 
         return likelihood
 
