@@ -6,7 +6,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
 torch.autograd.set_detect_anomaly(True)
-
+#test
 # assuming a linear regression emission model and a logistic regression transition model
 
 class IOHMM_model:
