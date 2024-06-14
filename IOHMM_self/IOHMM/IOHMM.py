@@ -159,8 +159,8 @@ class IOHMM_model:
             # normalize
             # to check xi
             a = torch.sum(xi, axis=1)
-            a = torch.sum(a, axis=1)
-            xi /= a[:, None, None]
+            #a = torch.sum(a, axis=1)
+            xi /= a[:, None]
             return xi
     
     def _log_likelihood(self, gamma, xi):
@@ -242,7 +242,7 @@ class IOHMM_model:
             path.append(last_state.item())
 
             for i in reversed(range(len(self.outputs) - 1)):
-                transition_prob = self.softmax(U[i + 1], last_state)
+                transition_prob = self.softmax_(U[i + 1], last_state)
                 last_state = torch.argmax(torch.log(transition_prob) + alpha[i])
                 path.append(last_state.item())
 
