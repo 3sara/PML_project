@@ -15,10 +15,19 @@ to find out how to use the alpha and beta to compute gamma and xi for computing 
 
 POSSIBLE EXTENSIONS:
 
-online learning: don't re-compute all the coeffcients when new data come in
+try to do the learning on orfeo
 
 improve training, use matrices operations instead of for
 don't use torch for optimisation, try to use the derivatives written in the article
 
-predicition for more than one obs
+predicition for more than one obs, try to write the function and do the plot to check if results are similar
+update also alpha
+
+compare our viterbi with hmm viterbi(close is difference of log)
+_____________________
+
+online learning: don't re-compute all the coeffcients when new data come in
+
+
+
 
