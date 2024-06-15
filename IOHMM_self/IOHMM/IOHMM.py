@@ -48,7 +48,8 @@ class IOHMM_model:
 
     def softmax_(self, input, state):
         with torch.no_grad():
-            return torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))) / torch.sum(torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))))
+            # I think is dim = 0
+            return (self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))) - torch.logsumexp(torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))), dim =0)
                 
     def softmax(self, input):
         with torch.no_grad():
@@ -64,7 +65,7 @@ class IOHMM_model:
             #softmax_probs = exp_logits / torch.sum(exp_logits, dim=1, keepdim=True)
 
             # Compute log softmax probabilities
-            softmax_probs = transition_logits - torch.logsumexp(transition_logits, dim=0)
+            softmax_probs = transition_logits - torch.logsumexp(transition_logits, dim=1)
             return softmax_probs
 
     def dnorm(self, x, mean, lsd):
@@ -85,7 +86,7 @@ class IOHMM_model:
             emission_prob = self.dnorm(self.outputs[0], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[0]))), self.lsd)
             # to normalize
             alpha[0] = self.initial_pi + emission_prob
-            alpha[0] /= torch.sum(alpha[0])
+            alpha[0] -= torch.logsumexp(alpha[0],dim =0)
 
             # Compute forward probabilities (t > 0)
             for t in range(1, T):
@@ -93,10 +94,13 @@ class IOHMM_model:
                 transition_prob = self.softmax(U[t])
                 # sum on the columns of transition_prob, quite sure about axis = 0
                 transition_prob += alpha[t-1].unsqueeze(1)
-                transition_prob = torch.sum(transition_prob, axis=0)
+
+                #------ not so sure about this to be a logsumexp -------------
+                transition_prob = torch.logsumexp(transition_prob, axis=0)
+
                 alpha[t] = emission_prob + transition_prob
                 # normalize
-                alpha[t] /= torch.sum(alpha[t])
+                alpha[t] -= torch.logsumexp(alpha[t], dim=0)
 
             return alpha
 
@@ -114,7 +118,7 @@ class IOHMM_model:
             emission_prob = self.dnorm(self.outputs[-1], self.emission_matrix @ (torch.cat((torch.tensor([1.0]),U[-1]))), self.lsd)
             # to normalize
             beta[-1] = emission_prob
-            beta[-1] /= torch.sum(beta[-1])
+            beta[-1] -= torch.logsumexp(beta[-1],dim=0)
 
             # Compute forward probabilities (t > 0)
             for t in reversed(range(T-1)):
@@ -122,10 +126,10 @@ class IOHMM_model:
                 transition_prob = self.softmax(U[t])
                 transition_prob += beta[t+1].unsqueeze(1)
                 # sum on the columns of transition_prob, quite sure about axis = 0
-                transition_prob = torch.sum(transition_prob, axis=0)
+                transition_prob = torch.logsumexp(transition_prob, axis=0)
                 beta[t] = emission_prob + transition_prob
                 # normlize
-                beta[t] /= torch.sum(beta[t])
+                beta[t] -= torch.logsumexp(beta[t],dim=0)
 
             return beta
 
@@ -136,7 +140,7 @@ class IOHMM_model:
             # so it should simply be alpha, but not sure
             gamma = alpha + beta
             # normalize
-            gamma /= torch.sum(gamma, axis=1).reshape(-1, 1)
+            gamma -= torch.logsumexp(gamma, axis=1).reshape(-1, 1)
             return gamma
 
 
@@ -162,9 +166,9 @@ class IOHMM_model:
 
             # normalize
             # to check xi
-            a = torch.sum(xi, axis=1)
+            a = torch.logsumexp(xi, axis=1)
             #a = torch.sum(a, axis=1)
-            xi /= a[:, None]
+            xi -= a[:, None]
             return xi
     
     def _log_likelihood(self, gamma, xi):
@@ -178,8 +182,8 @@ class IOHMM_model:
             x = torch.exp(self.emission_matrix) @ (torch.cat((torch.tensor([1.0]), self.inputs[t])))
             mu = output
 
-
-            dnorm = -0.5 * (((mu - x) / torch.exp(self.lsd)) ** 2) / (torch.exp(self.lsd) * torch.sqrt(torch.tensor(2 * np.pi)))
+            #--------- not sure about the first exp but I think here it should be a probability so maybe it's ok (?)---------------------
+            dnorm = torch.exp(-0.5 * (((mu - x) / torch.exp(self.lsd)) ** 2)) / (torch.exp(self.lsd) * torch.sqrt(torch.tensor(2 * np.pi)))
 
             likelihood += torch.sum(torch.exp(gamma[t, :]) * dnorm)
             # second term of the sum
@@ -194,7 +198,7 @@ class IOHMM_model:
 
 
             #compute directly log softmax probabilities
-            softmax_probs = transition_logits - torch.logsumexp(transition_logits, dim=0)
+            softmax_probs = transition_logits - torch.logsumexp(transition_logits, dim=1, keepdim=True)
             # to check relation between xi and softmax
             likelihood += torch.sum(torch.exp(xi[t, :, :]) * softmax_probs)
                 
