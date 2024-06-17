@@ -26,11 +26,10 @@ class IOHMM_model:
         # self.emission_matrix = 2 * torch.rand(num_states, inputs.shape[1], dtype=torch.float32) -1
 
         if initial_pi is not None:
-            # self.initial_pi = initial_pi
             self.initial_pi = nn.Parameter(initial_pi, requires_grad=True)
         else:
             self.initial_pi = nn.Parameter(torch.log(torch.ones(num_states)/num_states), requires_grad=True)
-            # self.initial_pi = torch.ones(num_states) / num_states
+
         if transition_matrix is not None:
             self.transition_matrix = nn.Parameter(transition_matrix, requires_grad=True)
         else:
@@ -89,11 +88,8 @@ class IOHMM_model:
             # Compute forward probabilities (t > 0)
             for t in range(1, T):
                 input_with_bias = torch.cat((torch.tensor([1.0]), U[t]))
-
-                ############################# check if it's correct to use the exponential of the emission matrix
                 log_emission_prob = self.log_dnorm(self.outputs[t], self.emission_matrix @ input_with_bias, self.log_sd)
-                ##############################
-
+            
                 log_transition_prob = self.log_softmax(U[t])
                 # sum on the columns of transition_prob, quite sure about axis = 0
                 log_transition_prob += alpha[t-1].unsqueeze(1)
@@ -181,13 +177,13 @@ class IOHMM_model:
             
             # first term of the sum
 
-            x = self.emission_matrix @ (torch.cat((torch.tensor([1.0]), self.inputs[t])))
+            x = torch.exp(self.emission_matrix) @ (torch.cat((torch.tensor([1.0]), self.inputs[t])))
             mu = output
 
             #--------- not sure about the first exp but I think here it should be a probability so maybe it's ok (?)---------------------
-            dnorm = (-0.5 * (((mu - x) / torch.exp(self.log_sd)) ** 2)) - ((self.log_sd) +torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
+            log_dnorm = (-0.5 * (((mu - x) / torch.exp(self.log_sd)) ** 2)) - (self.log_sd + torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
 
-            likelihood += torch.sum(torch.exp(gamma[t, :]) * dnorm)
+            likelihood += torch.sum(torch.exp(gamma[t, :]) * log_dnorm)
             # second term of the sum
 
             # Concatenate 1 to the beginning of the input
