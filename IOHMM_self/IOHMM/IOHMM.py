@@ -230,7 +230,7 @@ class IOHMM_model:
                 return loss
             print(f"Iteration {i+1}, likelihood: {old_log_likelihood}")
 
-            #print(alpha)
+            print(alpha)
 
             optimizer.step(closure)
             scheduler.step()
