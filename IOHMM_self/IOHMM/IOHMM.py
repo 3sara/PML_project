@@ -6,8 +6,6 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 
 torch.autograd.set_detect_anomaly(True)
-#test
-# assuming a linear regression emission model and a logistic regression transition model
 
 class IOHMM_model:
     def __init__(self, num_states, inputs, outputs, max_iter, tol, log_initial_pi=None, transition_matrix=None, emission_matrix=None, log_sd=None):
@@ -18,131 +16,159 @@ class IOHMM_model:
         self.tol = tol
         self.history = []
 
-        # self.log_initial_pi = torch.ones(num_states) / num_states
-        # transition matrix: the coefficients for a logistic regression model, size is (num_states, num_states, inputs.shape[0])
-        # first dimension is the current state, second dimension is the next state, third dimension is the input
-        # self.transition_matrix = 2 * torch.rand(num_states, num_states, inputs.shape[1], dtype=torch.float32) -1
-        # emission matrix: the coefficients for a linear regression model, size is (num_states, outputs.shape[0])
-        # self.emission_matrix = 2 * torch.rand(num_states, inputs.shape[1], dtype=torch.float32) -1
+        """
+            initial state distribution: the initial state distribution, size is (num_states)
+            self.log_initial_pi = torch.ones(num_states) / num_states
+
+            transition matrix: the coefficients for a logistic regression model, size is (num_states, num_states, inputs.shape[0])
+            first dimension is the current state, second dimension is the next state, third dimension is the input
+            
+            emission matrix: the coefficients for a linear regression model, size is (num_states, outputs.shape[0])
+        """
+
 
         if log_initial_pi is not None:
-            # self.log_initial_pi = log_initial_pi
             self.log_initial_pi = nn.Parameter(log_initial_pi, requires_grad=True)
         else:
             self.log_initial_pi = nn.Parameter(torch.log(torch.ones(num_states)/num_states), requires_grad=True)
-            # self.log_initial_pi = torch.ones(num_states) / num_states
+
         if transition_matrix is not None:
             self.transition_matrix = nn.Parameter(transition_matrix, requires_grad=True)
         else:
             self.transition_matrix = nn.Parameter(torch.randn(num_states, num_states, inputs.shape[1] + 1), requires_grad=True)
+        
         if emission_matrix is not None:
             self.emission_matrix = nn.Parameter(emission_matrix, requires_grad=True)
         else:
             self.emission_matrix = nn.Parameter(torch.randn(num_states, inputs.shape[1] + 1), requires_grad=True)
+        
         if log_sd is not None:
             self.log_sd = nn.Parameter(log_sd, requires_grad=True)
         else:
             # setting a higher log_sd was fundamental to make the model stable, otherwise the emission prob would be zero
             self.log_sd = nn.Parameter(torch.log(5.0*torch.ones(num_states)), requires_grad=True)
 
+    def log_normalization(self, x):
+        return x - torch.logsumexp(x, dim=0)
+
 
     def log_softmax_(self, input, state):
+        """
+            Compute the log softmax of the transition matrix for a given input and state.
+        """
         with torch.no_grad():
-            # I think is dim = 0
+
             return (self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))) - torch.logsumexp(torch.exp(self.transition_matrix[state,:,:] @ torch.cat((torch.tensor([1.0]),input))), dim =0)
+    
                 
     def log_softmax(self, input):
+        """
+            Compute the log softmax of the transition matrix for a given input.
+        """
         with torch.no_grad():
         
             # Concatenate 1 to the beginning of the input
             input_with_bias = torch.cat((torch.tensor([1.0]), input))
 
-            # Compute transition probabilities for all states
             transition_logits = self.transition_matrix @ input_with_bias
 
-            # Compute softmax probabilities
-            #exp_logits = torch.exp(transition_logits)
-            #softmax_probs = exp_logits / torch.sum(exp_logits, dim=1, keepdim=True)
-
-            # Compute log softmax probabilities
             log_softmax_probs = transition_logits - torch.logsumexp(transition_logits, dim=1)
+
             return log_softmax_probs
 
+    
     def log_dnorm(self, x, mean, log_sd):
-        with torch.no_grad():        
+        """
+            Compute the log density of a normal distribution with mean and log standard deviation.
+        """
+        with torch.no_grad():
+
             return (-0.5 * ((x - mean) / torch.exp(log_sd)) ** 2) - (log_sd + torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
 
+    
     def _forward(self):
+        """
+            Compute the forward probabilities.
+            Returns:
+                log_alpha: the log forward probabilities, size is (T, num_states)
+        """
+
         with torch.no_grad():
             
             T = len(self.outputs)
             N = self.num_states
             U = self.inputs
 
-            alpha = torch.zeros((T, N))
+            log_alpha = torch.zeros((T, N))
 
             # Initialization (t == 0)
             input_with_bias = torch.cat((torch.tensor([1.0]), U[0]))
             log_emission_prob = self.log_dnorm(self.outputs[0], self.emission_matrix @ input_with_bias, self.log_sd)
-            alpha[0] = self.log_initial_pi + log_emission_prob
-            # normalize
-            # alpha[0] -= torch.logsumexp(alpha[0], dim = 0
+            log_alpha[0] = self.log_normalization(self.log_initial_pi) + log_emission_prob
+            # Normalization
+            log_alpha[0] -= torch.logsumexp(log_alpha[0], dim = 0)
 
-            # Compute forward probabilities (t > 0)
+            # Iteration (t > 0)
             for t in range(1, T):
                 input_with_bias = torch.cat((torch.tensor([1.0]), U[t]))
                 log_emission_prob = self.log_dnorm(self.outputs[t], self.emission_matrix @ input_with_bias, self.log_sd)
-
                 log_transition_prob = self.log_softmax(U[t])
-                # sum on the columns of transition_prob, quite sure about axis = 0
-                log_transition_prob += alpha[t-1].unsqueeze(1)
-
-                alpha[t] = log_emission_prob + torch.logsumexp(log_transition_prob, axis=0)
-                # normalize
-                # alpha[t] -= torch.logsumexp(alpha[t], dim=0)
+                log_transition_prob += log_alpha[t-1].unsqueeze(1)
+                log_alpha[t] = log_emission_prob + torch.logsumexp(log_transition_prob, axis=0)
+                # Normalization
+                log_alpha[t] -= torch.logsumexp(log_alpha[t], dim=0)
             
-            #print(f"alpha: {alpha}")
-            return alpha
+            return log_alpha
 
 
     def _backward(self):
+        """
+            Compute the backward probabilities.
+            Returns:
+                log_beta: the log backward probabilities, size is (T, num_states)
+        """
+        
         with torch.no_grad():
             T = len(self.outputs)
             N = self.num_states
             U = self.inputs
 
-            beta = torch.zeros((T, N))
+            log_beta = torch.zeros((T, N))
 
-            # Initialize base cases (t == T-1)
+            # Initialization (t == T-1)
             input_with_bias = torch.cat((torch.tensor([1.0]), U[-1]))
             log_emission_prob = self.log_dnorm(self.outputs[-1], self.emission_matrix @ input_with_bias, self.log_sd)
-            beta[-1] = log_emission_prob
-            # normalize
-            # beta[-1] -= torch.logsumexp(beta[-1],dim=0)
+            log_beta[-1] = log_emission_prob
+            # Normalization
+            log_beta[-1] -= torch.logsumexp(log_beta[-1],dim=0)
 
-            # Compute forward probabilities (t > 0)
+            # Iteration (t > 0)
             for t in reversed(range(T-1)):
                 input_with_bias = torch.cat((torch.tensor([1.0]), U[t]))
                 log_emission_prob = self.log_dnorm(self.outputs[t], self.emission_matrix @ input_with_bias, self.log_sd)
-                
                 log_transition_prob = self.log_softmax(U[t])
-                log_transition_prob += beta[t+1].unsqueeze(1)
-                
-                beta[t] = log_emission_prob + torch.logsumexp(log_transition_prob, axis=0)
-                # normalize
-                # beta[t] -= torch.logsumexp(beta[t],dim=0)
-            #print(f"beta: {beta}")
-            return beta
+                log_transition_prob += log_beta[t+1].unsqueeze(1)
+                log_beta[t] = log_emission_prob + torch.logsumexp(log_transition_prob, axis=0)
+                # Normalization
+                log_beta[t] -= torch.logsumexp(log_beta[t],dim=0)
+
+            return log_beta
 
     
-    def _compute_gamma(self, alpha=None, beta=None):
+    def _compute_log_gamma(self, log_alpha=None, log_beta=None):
+        """
+            Compute the gamma probabilities which are defined as:
+                gamma_t(i) = P(X_t = i | Y, U)
+            Returns:
+                log_gamma: the log gamma probabilities, size is (T, num_states)
+        """
         with torch.no_grad():
-            # in the paper it says that zeta_it = P(x_t=i | all obs of inputs from 0 to t)
-            # so it should simply be alpha, but not sure
-            gamma = alpha + beta # P(X_t = i, all obs of input from 0 to t)
-            # normalize
-            # gamma -= torch.logsumexp(gamma, axis=1).reshape(-1, 1)
-            return gamma
+
+            log_gamma = log_alpha + log_beta
+            # Normalization
+            log_gamma -= torch.logsumexp(log_gamma, axis=1).reshape(-1, 1)
+
+            return log_gamma
     
 
     def _compute_log_zeta(self):
@@ -154,17 +180,19 @@ class IOHMM_model:
 
             log_zeta = torch.zeros((T, N))
 
-            log_zeta[0] = self.log_initial_pi #approximation
+            log_zeta[0] = self.log_normalization(self.log_initial_pi) #approximation
+            print(f"zeta[0]: {torch.exp(log_zeta[0])}")
 
             for t in range(1,T):
-                print(f"dim of log_zeta[t-1]: {log_zeta[t-1].shape}")
-                print(f"dim of log_softmax(U[t]): {self.log_softmax(U[t]).shape}")
-                log_zeta[t] = torch.logsumexp(log_zeta[t-1] + self.log_softmax(U[t]), axis=0)
+                log_zeta[t] = torch.logsumexp(log_zeta[t-1] + self.log_softmax(U[t]), axis=1)
+                # Normalization
+                log_zeta[t] -= torch.logsumexp(log_zeta[t], dim=0)
 
             return log_zeta
 
 
-    def _compute_log_xi(self, alpha=None, beta=None):
+    def _compute_log_xi(self, log_alpha=None, log_beta=None):
+        
         with torch.no_grad():
             T = len(self.outputs)
             N = self.num_states
@@ -174,27 +202,20 @@ class IOHMM_model:
 
             for t in range(0, T):
                 transition_prob = self.log_softmax(U[t]).T
-                # transpose to maintain the same notation of the article, in the row next state, in the columns previous state
-                #print(f"transition prob: {transition_prob}")
-                #print(f"alpha[t-1]: {alpha[t-1]}")
-                #print(f"beta[t]: {beta[t]}")
-                # not sure if i have to unsqueeze alpha or beta, is it the same?
+                log_xi[t, :, :] = transition_prob + log_beta[t].unsqueeze(1) + log_alpha[t-1]
 
-                log_xi[t, :, :] = transition_prob + beta[t].unsqueeze(1) + alpha[t-1]
-
-            # normalize
-            # to check xi
+            # Normalization
             a = torch.logsumexp(log_xi, axis=1)
-            #a = torch.sum(a, axis=1)
             log_xi -= a[:, None]
+
             return log_xi
 
-    def _log_likelihood(self, gamma, xi):
+    def _log_likelihood(self, log_zeta, log_xi):
         
         l = 0
 
-        zeta = torch.exp(self._compute_log_zeta())
-        xi = torch.exp(self._compute_log_xi(alpha=self._forward(), beta=self._backward()))
+        zeta = torch.exp(log_zeta)
+        xi = torch.exp(log_xi)
 
         log_dnorm_prob = torch.zeros((self.num_states))
         for i in  range(self.num_states):
@@ -202,7 +223,7 @@ class IOHMM_model:
                                                self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[0]))),
                                                self.log_sd[i])
 
-        l += torch.sum(zeta[0] * log_dnorm_prob) + torch.sum(torch.exp(xi[0]) * self.log_initial_pi)
+        l += torch.sum(zeta[0] * log_dnorm_prob) + torch.sum(xi[0] * self.log_normalization(self.log_initial_pi))
 
         for t in range(1,len(self.outputs)):
             for i in  range(self.num_states):
@@ -220,7 +241,7 @@ class IOHMM_model:
     
     def _log_likelihood_(self, gamma, xi):
         likelihood = 0
-        likelihood += torch.sum(torch.exp(gamma[0]) * self.log_initial_pi)
+        likelihood += torch.sum(torch.exp(gamma[0]) * self.log_normalization(self.log_initial_pi))
         
         for t, output in enumerate(self.outputs):
             
@@ -251,7 +272,6 @@ class IOHMM_model:
         return likelihood
 
 
-
     def _baum_welch(self):
         # sgd not good, better LBFGS
         optimizer = optim.SGD([self.log_initial_pi, self.transition_matrix, self.emission_matrix, self.log_sd], lr=0.01)
@@ -260,17 +280,18 @@ class IOHMM_model:
         old_log_likelihood = -torch.inf
 
         for i in range(self.max_iter):
-            # E-step: Compute the posterior probabilities
 
-            alpha = self._forward()
-            beta = self._backward()
-            gamma = self._compute_gamma(alpha, beta)
-            xi = self._compute_log_xi(alpha, beta)
+            # E-step: Compute the posterior probabilities
+            log_alpha = self._forward()
+            log_beta = self._backward()
+            log_gamma = self._compute_log_gamma(log_alpha, log_beta)
+            log_xi = self._compute_log_xi(log_alpha, log_beta)
+            log_zeta = self._compute_log_zeta()
 
             # M-step
             def closure():
                 optimizer.zero_grad()
-                loss = -self._log_likelihood(gamma, xi)
+                loss = -self._log_likelihood(log_zeta, log_xi)
                 loss.backward()
                 return loss
             print(f"Iteration {i+1}, likelihood: {old_log_likelihood}")
@@ -279,7 +300,7 @@ class IOHMM_model:
             #scheduler.step()
             
             with torch.no_grad():
-                new_log_likelihood = self._log_likelihood(gamma, xi)
+                new_log_likelihood = self._log_likelihood(log_zeta, log_xi)
                 self.history.append(new_log_likelihood)
                 # Check for convergence
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
@@ -295,14 +316,14 @@ class IOHMM_model:
         with torch.no_grad():
             U = self.inputs
 
-            alpha = self._forward()
+            log_alpha = self._forward()
             path = []
-            last_state = torch.argmax(alpha[-1])
+            last_state = torch.argmax(log_alpha[-1])
             path.append(last_state.item())
 
             for i in reversed(range(len(self.outputs) - 1)):
                 transition_prob = self.log_softmax_(U[i + 1], last_state)
-                last_state = torch.argmax(torch.log(transition_prob) + alpha[i])
+                last_state = torch.argmax(torch.log(transition_prob) + log_alpha[i])
                 path.append(last_state.item())
 
             path.reverse()
@@ -315,7 +336,7 @@ class IOHMM_model:
             
             #initialize the first state
             for i in range(self.num_states):
-                prob[0,i] = self.log_initial_pi[i] + self.log_dnorm(self.outputs[0], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[0]))), self.log_sd[i])
+                prob[0,i] = self.log_normalization(self.log_initial_pi)[i] + self.log_dnorm(self.outputs[0], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[0]))), self.log_sd[i])
 
             #complete the matrixes
             for t in range(1,len(self.outputs)):
