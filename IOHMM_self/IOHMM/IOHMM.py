@@ -89,10 +89,7 @@ class IOHMM_model:
             # Compute forward probabilities (t > 0)
             for t in range(1, T):
                 input_with_bias = torch.cat((torch.tensor([1.0]), U[t]))
-
-                ############################# check if it's correct to use the exponential of the emission matrix
                 log_emission_prob = self.log_dnorm(self.outputs[t], self.emission_matrix @ input_with_bias, self.log_sd)
-                ##############################
 
                 log_transition_prob = self.log_softmax(U[t])
                 # sum on the columns of transition_prob, quite sure about axis = 0
@@ -184,7 +181,6 @@ class IOHMM_model:
             x = self.emission_matrix @ (torch.cat((torch.tensor([1.0]), self.inputs[t])))
             mu = output
 
-            #--------- not sure about the first exp but I think here it should be a probability so maybe it's ok (?)---------------------
             dnorm = (-0.5 * (((mu - x) / torch.exp(self.log_sd)) ** 2)) - ((self.log_sd) +torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
 
             likelihood += torch.sum(torch.exp(gamma[t, :]) * dnorm)
