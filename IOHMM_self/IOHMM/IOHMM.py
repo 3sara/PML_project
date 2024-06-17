@@ -10,7 +10,7 @@ torch.autograd.set_detect_anomaly(True)
 # assuming a linear regression emission model and a logistic regression transition model
 
 class IOHMM_model:
-    def __init__(self, num_states, inputs, outputs, max_iter, tol, initial_pi=None, transition_matrix=None, emission_matrix=None, log_sd=None):
+    def __init__(self, num_states, inputs, outputs, max_iter, tol, log_initial_pi=None, transition_matrix=None, emission_matrix=None, log_sd=None):
         self.num_states = num_states
         self.inputs = inputs
         self.outputs = outputs
@@ -18,19 +18,19 @@ class IOHMM_model:
         self.tol = tol
         self.history = []
 
-        # self.initial_pi = torch.ones(num_states) / num_states
+        # self.log_initial_pi = torch.ones(num_states) / num_states
         # transition matrix: the coefficients for a logistic regression model, size is (num_states, num_states, inputs.shape[0])
         # first dimension is the current state, second dimension is the next state, third dimension is the input
         # self.transition_matrix = 2 * torch.rand(num_states, num_states, inputs.shape[1], dtype=torch.float32) -1
         # emission matrix: the coefficients for a linear regression model, size is (num_states, outputs.shape[0])
         # self.emission_matrix = 2 * torch.rand(num_states, inputs.shape[1], dtype=torch.float32) -1
 
-        if initial_pi is not None:
-            # self.initial_pi = initial_pi
-            self.initial_pi = nn.Parameter(initial_pi, requires_grad=True)
+        if log_initial_pi is not None:
+            # self.log_initial_pi = log_initial_pi
+            self.log_initial_pi = nn.Parameter(log_initial_pi, requires_grad=True)
         else:
-            self.initial_pi = nn.Parameter(torch.log(torch.ones(num_states)/num_states), requires_grad=True)
-            # self.initial_pi = torch.ones(num_states) / num_states
+            self.log_initial_pi = nn.Parameter(torch.log(torch.ones(num_states)/num_states), requires_grad=True)
+            # self.log_initial_pi = torch.ones(num_states) / num_states
         if transition_matrix is not None:
             self.transition_matrix = nn.Parameter(transition_matrix, requires_grad=True)
         else:
@@ -74,17 +74,19 @@ class IOHMM_model:
 
     def _forward(self):
         with torch.no_grad():
+            
             T = len(self.outputs)
             N = self.num_states
             U = self.inputs
 
             alpha = torch.zeros((T, N))
 
-            # Initialize base cases (t == 0)
+            # Initialization (t == 0)
             input_with_bias = torch.cat((torch.tensor([1.0]), U[0]))
             log_emission_prob = self.log_dnorm(self.outputs[0], self.emission_matrix @ input_with_bias, self.log_sd)
-            alpha[0] = self.initial_pi + log_emission_prob
-            alpha[0] -= torch.logsumexp(alpha[0], dim = 0)
+            alpha[0] = self.log_initial_pi + log_emission_prob
+            # normalize
+            # alpha[0] -= torch.logsumexp(alpha[0], dim = 0
 
             # Compute forward probabilities (t > 0)
             for t in range(1, T):
@@ -97,8 +99,9 @@ class IOHMM_model:
 
                 alpha[t] = log_emission_prob + torch.logsumexp(log_transition_prob, axis=0)
                 # normalize
-                alpha[t] -= torch.logsumexp(alpha[t], dim=0)
-
+                # alpha[t] -= torch.logsumexp(alpha[t], dim=0)
+            
+            #print(f"alpha: {alpha}")
             return alpha
 
 
@@ -111,12 +114,11 @@ class IOHMM_model:
             beta = torch.zeros((T, N))
 
             # Initialize base cases (t == T-1)
-            # parallel version
             input_with_bias = torch.cat((torch.tensor([1.0]), U[-1]))
             log_emission_prob = self.log_dnorm(self.outputs[-1], self.emission_matrix @ input_with_bias, self.log_sd)
-            # to normalize
             beta[-1] = log_emission_prob
-            beta[-1] -= torch.logsumexp(beta[-1],dim=0)
+            # normalize
+            # beta[-1] -= torch.logsumexp(beta[-1],dim=0)
 
             # Compute forward probabilities (t > 0)
             for t in reversed(range(T-1)):
@@ -127,29 +129,48 @@ class IOHMM_model:
                 log_transition_prob += beta[t+1].unsqueeze(1)
                 
                 beta[t] = log_emission_prob + torch.logsumexp(log_transition_prob, axis=0)
-                # normlize
-                beta[t] -= torch.logsumexp(beta[t],dim=0)
-
+                # normalize
+                # beta[t] -= torch.logsumexp(beta[t],dim=0)
+            #print(f"beta: {beta}")
             return beta
 
-
+    
     def _compute_gamma(self, alpha=None, beta=None):
         with torch.no_grad():
             # in the paper it says that zeta_it = P(x_t=i | all obs of inputs from 0 to t)
             # so it should simply be alpha, but not sure
-            gamma = alpha + beta
+            gamma = alpha + beta # P(X_t = i, all obs of input from 0 to t)
             # normalize
-            gamma -= torch.logsumexp(gamma, axis=1).reshape(-1, 1)
+            # gamma -= torch.logsumexp(gamma, axis=1).reshape(-1, 1)
             return gamma
+    
 
-
-    def _compute_xi(self, alpha=None, beta=None):
+    def _compute_log_zeta(self):
+        # zeta_it = P(X_t = i | all obs of inputs from 0 to t)
         with torch.no_grad():
             T = len(self.outputs)
             N = self.num_states
             U = self.inputs
 
-            xi = torch.zeros((T, N, N))
+            log_zeta = torch.zeros((T, N))
+
+            log_zeta[0] = self.log_initial_pi #approximation
+
+            for t in range(1,T):
+                print(f"dim of log_zeta[t-1]: {log_zeta[t-1].shape}")
+                print(f"dim of log_softmax(U[t]): {self.log_softmax(U[t]).shape}")
+                log_zeta[t] = torch.logsumexp(log_zeta[t-1] + self.log_softmax(U[t]), axis=0)
+
+            return log_zeta
+
+
+    def _compute_log_xi(self, alpha=None, beta=None):
+        with torch.no_grad():
+            T = len(self.outputs)
+            N = self.num_states
+            U = self.inputs
+
+            log_xi = torch.zeros((T, N, N))
 
             for t in range(0, T):
                 transition_prob = self.log_softmax(U[t]).T
@@ -158,21 +179,48 @@ class IOHMM_model:
                 #print(f"alpha[t-1]: {alpha[t-1]}")
                 #print(f"beta[t]: {beta[t]}")
                 # not sure if i have to unsqueeze alpha or beta, is it the same?
-                xi[t, :, :] = transition_prob + beta[t].unsqueeze(1) + alpha[t-1]
 
-            # S = torch.sum(alpha[T-1, :], axis=0)
-            # xi /= S
+                log_xi[t, :, :] = transition_prob + beta[t].unsqueeze(1) + alpha[t-1]
 
             # normalize
             # to check xi
-            a = torch.logsumexp(xi, axis=1)
+            a = torch.logsumexp(log_xi, axis=1)
             #a = torch.sum(a, axis=1)
-            xi -= a[:, None]
-            return xi
-    
+            log_xi -= a[:, None]
+            return log_xi
+
     def _log_likelihood(self, gamma, xi):
+        
+        l = 0
+
+        zeta = torch.exp(self._compute_log_zeta())
+        xi = torch.exp(self._compute_log_xi(alpha=self._forward(), beta=self._backward()))
+
+        log_dnorm_prob = torch.zeros((self.num_states))
+        for i in  range(self.num_states):
+            log_dnorm_prob[i] = self.log_dnorm(self.outputs[0],
+                                               self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[0]))),
+                                               self.log_sd[i])
+
+        l += torch.sum(zeta[0] * log_dnorm_prob) + torch.sum(torch.exp(xi[0]) * self.log_initial_pi)
+
+        for t in range(1,len(self.outputs)):
+            for i in  range(self.num_states):
+                
+                log_dnorm_prob = self.log_dnorm(self.outputs[t],
+                                                self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))),
+                                                self.log_sd[i])
+
+                l += zeta[t,i] * log_dnorm_prob
+
+                for j in range(self.num_states):
+                    l += xi[t,i,j] * self.log_softmax(self.inputs[t])[i,j]
+
+        return l
+    
+    def _log_likelihood_(self, gamma, xi):
         likelihood = 0
-        likelihood += torch.sum(torch.exp(gamma[0]) * self.initial_pi)
+        likelihood += torch.sum(torch.exp(gamma[0]) * self.log_initial_pi)
         
         for t, output in enumerate(self.outputs):
             
@@ -181,7 +229,7 @@ class IOHMM_model:
             x = self.emission_matrix @ (torch.cat((torch.tensor([1.0]), self.inputs[t])))
             mu = output
 
-            dnorm = (-0.5 * (((mu - x) / torch.exp(self.log_sd)) ** 2)) - ((self.log_sd) +torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
+            dnorm = (-0.5 * (((mu - x) / torch.exp(self.log_sd)) ** 2)) - ((self.log_sd) + torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
 
             likelihood += torch.sum(torch.exp(gamma[t, :]) * dnorm)
             # second term of the sum
@@ -206,7 +254,7 @@ class IOHMM_model:
 
     def _baum_welch(self):
         # sgd not good, better LBFGS
-        optimizer = optim.SGD([self.initial_pi, self.transition_matrix, self.emission_matrix, self.log_sd], lr=0.1)
+        optimizer = optim.SGD([self.log_initial_pi, self.transition_matrix, self.emission_matrix, self.log_sd], lr=0.01)
         #scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.95)  # Decrease lr by 0.9 every 1 steps
         
         old_log_likelihood = -torch.inf
@@ -217,7 +265,7 @@ class IOHMM_model:
             alpha = self._forward()
             beta = self._backward()
             gamma = self._compute_gamma(alpha, beta)
-            xi = self._compute_xi(alpha, beta)
+            xi = self._compute_log_xi(alpha, beta)
 
             # M-step
             def closure():
@@ -230,7 +278,6 @@ class IOHMM_model:
             optimizer.step(closure)
             #scheduler.step()
             
-
             with torch.no_grad():
                 new_log_likelihood = self._log_likelihood(gamma, xi)
                 self.history.append(new_log_likelihood)
@@ -244,7 +291,7 @@ class IOHMM_model:
         if i == self.max_iter:    
             print("convergence not reached")
 
-    def viterbi(self):
+    def _viterbi(self):
         with torch.no_grad():
             U = self.inputs
 
@@ -261,6 +308,27 @@ class IOHMM_model:
             path.reverse()
             return path
     
+    def viterbi(self):
+
+            prob=torch.zeros((len(self.outputs),self.num_states), dtype=torch.float64)
+            path=torch.zeros((len(self.outputs),self.num_states), dtype=torch.int64)
+            
+            #initialize the first state
+            for i in range(self.num_states):
+                prob[0,i] = self.log_initial_pi[i] + self.log_dnorm(self.outputs[0], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[0]))), self.log_sd[i])
+
+            #complete the matrixes
+            for t in range(1,len(self.outputs)):
+                for i in range(self.num_states):
+                    prob[t,i] = torch.max(prob[t-1,:] + self.log_softmax(self.inputs[t])[i] + self.log_dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.log_sd[i]))
+                    path[t,i]=torch.argmax(prob[t-1,:] + self.log_softmax(self.inputs[t])[i] + self.log_dnorm(self.outputs[t], self.emission_matrix[i].dot(torch.cat((torch.tensor([1.0]), self.inputs[t]))), self.log_sd[i]))
+            
+            state_sequence=torch.zeros(len(self.outputs), dtype=torch.int64)
+            state_sequence[-1]=torch.argmax(prob[-1,:])
+            for t in range(len(self.outputs)-2,-1,-1):
+                state_sequence[t]=path[t+1,state_sequence[t+1]]
+            return state_sequence
+        
 
     def predict(self, u_t1):
         """
