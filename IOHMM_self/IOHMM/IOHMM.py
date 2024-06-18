@@ -17,13 +17,16 @@ class IOHMM_model:
         self.history = []
 
         """
-            initial state distribution: the initial state distribution, size is (num_states)
-            self.log_initial_pi = torch.ones(num_states) / num_states
+            Initial state distribution: size (num_states)
+                the initial state distribution, if None, it is initialized as a uniform distribution
 
-            transition matrix: the coefficients for a logistic regression model, size is (num_states, num_states, inputs.shape[0])
-            first dimension is the current state, second dimension is the next state, third dimension is the input
+            Transition matrix: size (num_states, num_states, inputs.shape[1]+1)
+                the coefficients for a logistic regression model, if None, it is initialized randomly
+                first dimension is the current state, second dimension is the next state, third dimension is the input
+                the dimension of the input is inputs.shape[1] + 1, since we include
             
-            emission matrix: the coefficients for a linear regression model, size is (num_states, outputs.shape[0])
+            Emission matrix:
+                the coefficients for a linear regression model, size is (num_states, outputs.shape[0])
         """
 
 
@@ -64,6 +67,8 @@ class IOHMM_model:
     def log_softmax(self, input):
         """
             Compute the log softmax of the transition matrix for a given input.
+            Input:
+                input: the input, size is (input.shape[0])
         """
         with torch.no_grad():
         
@@ -172,7 +177,12 @@ class IOHMM_model:
     
 
     def _compute_log_zeta(self):
-        # zeta_it = P(X_t = i | all obs of inputs from 0 to t)
+        """
+            Compute the zeta probabilities which are defined as:
+                zeta_t(i) = P(X_t = i | Y_{1:t})
+            Returns:
+                log_zeta: the log zeta probabilities, size is (T, num_states)
+        """
         with torch.no_grad():
             T = len(self.outputs)
             N = self.num_states
@@ -192,6 +202,12 @@ class IOHMM_model:
 
 
     def _compute_log_xi(self, log_alpha=None, log_beta=None):
+        """
+            Compute the xi probabilities which are defined as:
+                xi_t(i,j) = P(X_t = i, X_t+1 = j | Y, U)
+            Returns:
+                log_xi: the log xi probabilities, size is (T, num_states, num_states)
+        """
         
         with torch.no_grad():
             T = len(self.outputs)
@@ -203,10 +219,8 @@ class IOHMM_model:
             for t in range(0, T):
                 transition_prob = self.log_softmax(U[t]).T
                 log_xi[t, :, :] = transition_prob + log_beta[t].unsqueeze(1) + log_alpha[t-1]
-
-            # Normalization
-            a = torch.logsumexp(log_xi, axis=1)
-            log_xi -= a[:, None]
+                # Normalization
+                log_xi[t] -= torch.logsumexp(log_alpha[T-1], axis=0)
 
             return log_xi
 
@@ -294,13 +308,14 @@ class IOHMM_model:
                 loss = -self._log_likelihood(log_zeta, log_xi)
                 loss.backward()
                 return loss
-            print(f"Iteration {i+1}, likelihood: {old_log_likelihood}")
 
             optimizer.step(closure)
             #scheduler.step()
             
             with torch.no_grad():
                 new_log_likelihood = self._log_likelihood(log_zeta, log_xi)
+                l_marco = self._log_likelihood_(torch.exp(log_gamma), torch.exp(log_xi))
+                print(f"iter: {i}, likelihood: {new_log_likelihood}, likelihood marco: {l_marco}")
                 self.history.append(new_log_likelihood)
                 # Check for convergence
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
@@ -308,6 +323,7 @@ class IOHMM_model:
                     print(f"final likelihood: {new_log_likelihood}")
                     break
                 old_log_likelihood = new_log_likelihood
+            
 
         if i == self.max_iter:    
             print("convergence not reached")

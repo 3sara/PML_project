@@ -16,6 +16,7 @@ class IOHMM_model:
         self.T = inputs.shape[0]
         self.max_iter = max_iter
         self.tol = tol
+        self.history = []
 
         """
         Parameters:
@@ -83,16 +84,16 @@ class IOHMM_model:
             log_phi: torch.tensor, size (num_states, num_states)
             phi_ij = p(x_t = i | x_{t-1} = j, u_t)
         """
-        with torch.no_grad():
+        #with torch.no_grad():
 
-            bias = torch.tensor([1.0])
-            input_w_bias = torch.cat((bias, u_t))
+        bias = torch.tensor([1.0])
+        input_w_bias = torch.cat((bias, u_t))
 
-            x = torch.matmul(self.theta_transition, input_w_bias)
-            log_phi = x - torch.logsumexp(x, dim=0)
-            
-            return log_phi
-    
+        x = torch.matmul(self.theta_transition, input_w_bias)
+        log_phi = x - torch.logsumexp(x, dim=0)
+        
+        return log_phi
+
     def emission_subnetwork(self, u_t):
         """
         Parameters:
@@ -102,14 +103,14 @@ class IOHMM_model:
         Returns:
             eta: torch.tensor, size (num_states)
         """
-        with torch.no_grad():
+        #with torch.no_grad():
 
-            bias = torch.tensor([1.0])
-            input_w_bias = torch.cat((bias, u_t))
+        bias = torch.tensor([1.0])
+        input_w_bias = torch.cat((bias, u_t))
 
-            eta = torch.matmul(self.theta_emission, input_w_bias)
-            
-            return eta
+        eta = torch.matmul(self.theta_emission, input_w_bias)
+        
+        return eta
     
 
     def log_dnorm(self, x, mean, log_sd):
@@ -129,9 +130,9 @@ class IOHMM_model:
                 the log probability of the data point
         
         """
-        with torch.no_grad():
+        #with torch.no_grad():
             
-            return (-0.5 * ((x - mean) / torch.exp(log_sd)) ** 2) - (log_sd + torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
+        return (-0.5 * ((x - mean) / torch.exp(log_sd)) ** 2) - (log_sd + torch.log(torch.sqrt(torch.tensor(2 * np.pi))))
     
 
     def forward(self):
@@ -141,28 +142,28 @@ class IOHMM_model:
         Returns:
             log_alpha: torch.tensor, size (num_states, T)
         """
-        with torch.no_grad():
+        #with torch.no_grad():
 
-            log_alpha = torch.zeros(self.num_states, self.T)
+        log_alpha = torch.zeros(self.num_states, self.T)
 
-            # Initialization
-            log_alpha_start = self.log_initial_pi
+        # Initialization
+        log_alpha_start = self.log_initial_pi
 
+        for i in range(self.num_states):
+            mean = self.emission_subnetwork(self.inputs[0])
+            log_dnorm_prob = self.log_dnorm(self.outputs[0], mean[i], self.log_sd[i])
+            log_phi = self.state_subnetwork(self.inputs[0])
+            log_alpha[i, 0] = log_dnorm_prob + torch.logsumexp(log_phi[i, :] + log_alpha_start, dim=0)   
+
+        # Iteration
+        for t in range(1, self.T):
             for i in range(self.num_states):
-                mean = self.emission_subnetwork(self.inputs[0])
-                log_dnorm_prob = self.log_dnorm(self.outputs[0], mean[i], self.log_sd[i])
-                log_phi = self.state_subnetwork(self.inputs[0])
-                log_alpha[i, 0] = log_dnorm_prob + torch.logsumexp(log_phi[i, :] + log_alpha_start, dim=0)   
-
-            # Iteration
-            for t in range(1, self.T):
-                for i in range(self.num_states):
-                    mean = self.emission_subnetwork(self.inputs[t])
-                    log_dnorm_prob = self.log_dnorm(self.outputs[t], mean[i], self.log_sd[i])
-                    log_phi = self.state_subnetwork(self.inputs[t])
-                    log_alpha[i, t] = log_dnorm_prob + torch.logsumexp(log_phi[i, :]+log_alpha[:, t-1], dim=0)   
-            
-            return log_alpha
+                mean = self.emission_subnetwork(self.inputs[t])
+                log_dnorm_prob = self.log_dnorm(self.outputs[t], mean[i], self.log_sd[i])
+                log_phi = self.state_subnetwork(self.inputs[t])
+                log_alpha[i, t] = log_dnorm_prob + torch.logsumexp(log_phi[i, :]+log_alpha[:, t-1], dim=0)   
+        
+        return log_alpha
         
     
     def backward(self):
@@ -172,39 +173,37 @@ class IOHMM_model:
         Returns:
             log_backward: torch.tensor, size (num_states, T)
         """
-        with torch.no_grad():
-            log_beta = torch.zeros(self.num_states, self.T)
+        #with torch.no_grad():
+        log_beta = torch.zeros(self.num_states, self.T)
 
-            # Initialization
-            log_beta[:, -1] = torch.zeros(self.num_states)
+        # Initialization
+        log_beta[:, -1] = torch.zeros(self.num_states)
 
-            # Iteration
-            
-            for t in range(self.T-2, -1, -1):
-                for i in range(self.num_states):
-                    mean = self.emission_subnetwork(self.inputs[t+1])
-                    log_dnorm_prob = self.log_dnorm(self.outputs[t+1], mean, self.log_sd)
-                    log_phi = self.state_subnetwork(self.inputs[t+1])
-                    log_beta[i, t] = torch.logsumexp(log_phi[:, i] + log_dnorm_prob + log_beta[:, t+1], dim=0)
-            
-            return log_beta
+        # Iteration
+        
+        for t in range(self.T-2, -1, -1):
+            for i in range(self.num_states):
+                mean = self.emission_subnetwork(self.inputs[t+1])
+                log_dnorm_prob = self.log_dnorm(self.outputs[t+1], mean, self.log_sd)
+                log_phi = self.state_subnetwork(self.inputs[t+1])
+                log_beta[i, t] = torch.logsumexp(log_phi[:, i] + log_dnorm_prob + log_beta[:, t+1], dim=0)
+        
+        return log_beta
         
     
-    def compute_log_g(self):
+    def compute_log_g(self,log_alpha, log_beta):
         """
         Compute the intermediate variable g for the EM algorithm.
         
         Returns:
             g: torch.tensor, size (num_states, T+1)
         """
-        with torch.no_grad():
-            log_alpha = self.forward()
-            log_beta = self.backward()
-            log_L = torch.logsumexp(log_alpha[:, -1], dim=0)
-            
-            g = log_alpha + log_beta - log_L
+        #with torch.no_grad():
+        log_L = torch.logsumexp(log_alpha[:, -1], dim=0)
+        
+        g = log_alpha + log_beta - log_L
 
-            return g
+        return g
     
     def compute_log_h(self, log_alpha, log_beta):
         """
@@ -213,26 +212,26 @@ class IOHMM_model:
         Returns:
             h: torch.tensor, size (num_states, num_states, T)
         """
-        with torch.no_grad():
-            log_h = torch.zeros(self.num_states, self.num_states, self.T)
-            L = torch.logsumexp(log_alpha[:, -1], dim=0)
+        #with torch.no_grad():
+        log_h = torch.zeros(self.num_states, self.num_states, self.T)
+        L = torch.logsumexp(log_alpha[:, -1], dim=0)
 
+        for i in range(self.num_states):
+            for j in range(self.num_states):
+                mean = self.emission_subnetwork(self.inputs[0])
+                log_dnorm_prob = self.log_dnorm(self.outputs[0], mean[i], self.log_sd[i])
+                log_phi = self.state_subnetwork(self.inputs[0])
+                log_h[i, j, 0] = log_dnorm_prob + self.log_initial_pi[j] + log_phi[i, j] + log_beta[i, 0] - L
+
+        for t in range(1,self.T):
             for i in range(self.num_states):
                 for j in range(self.num_states):
-                    mean = self.emission_subnetwork(self.inputs[0])
-                    log_dnorm_prob = self.log_dnorm(self.outputs[0], mean[i], self.log_sd[i])
-                    log_phi = self.state_subnetwork(self.inputs[0])
-                    log_h[i, j, 0] = log_dnorm_prob + self.log_initial_pi[j] + log_phi[i, j] + log_beta[i, 0] - L
+                    mean = self.emission_subnetwork(self.inputs[t])
+                    log_dnorm_prob = self.log_dnorm(self.outputs[t], mean[i], self.log_sd[i])
+                    log_phi = self.state_subnetwork(self.inputs[t])
+                    log_h[i, j, t] = log_dnorm_prob + log_alpha[j, t-1] + log_phi[i, j] + log_beta[i, t] - L
 
-            for t in range(1,self.T):
-                for i in range(self.num_states):
-                    for j in range(self.num_states):
-                        mean = self.emission_subnetwork(self.inputs[t])
-                        log_dnorm_prob = self.log_dnorm(self.outputs[t], mean[i], self.log_sd[i])
-                        log_phi = self.state_subnetwork(self.inputs[t])
-                        log_h[i, j, t] = log_dnorm_prob + log_alpha[j, t-1] + log_phi[i, j] + log_beta[i, t] - L
-
-            return log_h
+        return log_h
         
     
     def log_likelihood(self, log_g, log_h):
@@ -259,8 +258,27 @@ class IOHMM_model:
 
     def log_normalization(self, x):
         return x - torch.logsumexp(x, dim=0)
+    
+    def viterbi(self):
+        with torch.no_grad():
+            U = self.inputs
+            log_alpha = self.forward()
+            
+            path = []
+            last_state = torch.argmax(log_alpha[-1])
+            path.append(last_state.item())
 
+            for t in reversed(range(len(self.outputs) - 1)):
+                transition_prob = self.state_subnetwork(U[t + 1])[last_state]
 
+                last_state = torch.argmax(transition_prob + log_alpha[:,t])
+                path.append(last_state.item())
+
+            path.reverse()
+            return path
+        
+
+    
     def baum_welch(self):
 
         optimizer = optim.SGD([self.log_initial_pi, self.theta_transition, self.theta_emission, self.log_sd], lr=0.01)
@@ -270,10 +288,14 @@ class IOHMM_model:
         old_log_likelihood = -torch.inf
 
         for i in range(self.max_iter):
+            print(f"iteration {i}\r")
+            self.history.append(old_log_likelihood)
 
             # E-step
-            log_g = self.compute_log_g()
-            log_h = self.compute_log_h()
+            log_alpha = self.forward()
+            log_beta = self.backward()
+            log_g = self.compute_log_g(log_alpha, log_beta)
+            log_h = self.compute_log_h(log_alpha,log_beta)
 
             # M-step
             def closure():
@@ -288,7 +310,7 @@ class IOHMM_model:
             # Check for convergence
             with torch.no_grad():
 
-                new_log_likelihood = self._log_likelihood(log_g, log_h)
+                new_log_likelihood = self.log_likelihood(log_g, log_h)
                 
                 if torch.abs(new_log_likelihood - old_log_likelihood) < self.tol:
                     print("convergence reached :)")
@@ -296,9 +318,7 @@ class IOHMM_model:
                     break
 
                 old_log_likelihood = new_log_likelihood
-
-
-
+    
 
         
 
