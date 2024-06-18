@@ -202,11 +202,7 @@ class IOHMM_model:
 
             for t in range(0, T):
                 transition_prob = self.log_softmax(U[t]).T
-                log_xi[t, :, :] = transition_prob + log_beta[t].unsqueeze(1) + log_alpha[t-1]
-
-            # Normalization
-            a = torch.logsumexp(log_xi, axis=1)
-            log_xi -= a[:, None]
+                log_xi[t, :, :] = transition_prob + log_beta[t].unsqueeze(1) + log_alpha[t-1] - torch.logsumexp(log_alpha[T-1], dim=0)
 
             return log_xi
 
