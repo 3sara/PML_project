@@ -104,6 +104,10 @@ class _BaseIOHMM():
         self.obs_weight_mat = np.random.random(self.n_components * self.input_dim)
         self.obs_weight_mat = self.obs_weight_mat.reshape(self.n_components, self.input_dim)
 
+        self.trans_posts= None
+        self.state_posts= None
+        self.log_state_posts= None
+
 
     def fit(self):
         """ Estimate the model parameters
@@ -320,6 +324,7 @@ class _BaseIOHMM():
         self.state_posts = state_posts
         self.log_state_posts = log_state_posts
         print('--------trans_posts-------- \n', trans_posts)
+        return trans_posts, state_posts
 
     def _do_forward_pass(self, log_trans_mat, log_frame_prob):
         """  Compute the forward lattice
@@ -360,3 +365,25 @@ class _BaseIOHMM():
                     work_buffer[j] = log_bwd_lattice[t + 1, j] + log_frame_prob[t + 1][j] + log_trans_mat[t + 1][i][j]
                 log_bwd_lattice[t][i] = extmath.logsumexp(work_buffer)
         return log_bwd_lattice
+    
+
+
+    def _test_predictions(self):
+        """
+        Test the prediction of the model
+        """
+
+        predictions = []
+
+
+        for i in range(len(self.ins[0])):
+            for j in range(self.n_components):
+                nu=0
+                nu += np.exp(self.ins[0][i] @ self.obs_weight_mat[j]) * self.state_posts[i,j]
+
+
+            predictions.append(nu)
+
+        return predictions
+
+
