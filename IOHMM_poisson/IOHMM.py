@@ -372,18 +372,12 @@ class _BaseIOHMM():
         """
         Test the prediction of the model
         """
-
         predictions = []
-
-
         for i in range(len(self.ins[0])):
             for j in range(self.n_components):
                 nu=0
                 nu += np.exp(self.ins[0][i] @ self.obs_weight_mat[j]) * self.state_posts[i,j]
-
-
             predictions.append(nu)
-
         return predictions
 
 
