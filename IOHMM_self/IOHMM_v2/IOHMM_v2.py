@@ -309,7 +309,7 @@ class IOHMM_model:
     
     def baum_welch(self):
 
-        optimizer = optim.SGD([self.log_initial_pi, self.theta_transition, self.theta_emission, self.log_sd], lr=0.2)
+        optimizer = optim.SGD([self.log_initial_pi, self.theta_transition, self.theta_emission, self.log_sd], lr=0.01)
         
         #scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.95)  # Decrease lr by 0.9 every 1 steps
         
