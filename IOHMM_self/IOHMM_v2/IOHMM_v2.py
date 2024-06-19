@@ -3,6 +3,7 @@ import torch
 from torch import nn
 import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
+import matplotlib.pyplot as plt
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -161,7 +162,7 @@ class IOHMM_model:
                 mean = self.emission_subnetwork(self.inputs[t])
                 log_dnorm_prob = self.log_dnorm(self.outputs[t], mean[i], self.log_sd[i])
                 log_phi = self.state_subnetwork(self.inputs[t])
-                log_alpha[i, t] = log_dnorm_prob + torch.logsumexp(log_phi[i, :]+log_alpha[:, t-1], dim=0)   
+                log_alpha[i, t] = log_dnorm_prob + torch.logsumexp(log_phi[i, :]+log_alpha[:, t-1], dim=0)  
         
         return log_alpha
         
@@ -242,7 +243,7 @@ class IOHMM_model:
             log_likelihood: torch.tensor
         """
         
-        l = torch.zeros((1,1))
+        l = torch.zeros(1,1)
 
         for t in range(self.T):
             for i in range(self.num_states):
@@ -260,6 +261,33 @@ class IOHMM_model:
         return x - torch.logsumexp(x, dim=0)
     
     def viterbi(self):
+
+        prob=torch.zeros((len(self.outputs),self.num_states), dtype=torch.float64)
+        path=torch.zeros((len(self.outputs),self.num_states), dtype=torch.int64)
+        
+        #initialize the first state
+        for i in range(self.num_states):
+            mean = self.emission_subnetwork(self.inputs[0])
+            log_dnorm_prob = self.log_dnorm(self.outputs[0], mean[0], self.log_sd[0])
+
+            prob[0,i] = self.log_normalization(self.log_initial_pi)[i] + log_dnorm_prob
+
+        #complete the matrixes
+        for t in range(1,len(self.outputs)):
+            for i in range(self.num_states):
+                mean = self.emission_subnetwork(self.inputs[t])
+                log_dnorm_prob = self.log_dnorm(self.outputs[t], mean[i], self.log_sd[i])
+                log_phi = self.state_subnetwork(self.inputs[0])
+                prob[t,i] = torch.max(prob[t-1,:] + log_phi + log_dnorm_prob)
+                path[t,i]=torch.argmax(prob[t-1,:] + log_phi + log_dnorm_prob)
+        
+        state_sequence=torch.zeros(len(self.outputs), dtype=torch.int64)
+        state_sequence[-1]=torch.argmax(prob[-1,:])
+        for t in range(len(self.outputs)-2,-1,-1):
+            state_sequence[t]=path[t+1,state_sequence[t+1]]
+        return state_sequence
+    
+    def viterbi_(self):
         with torch.no_grad():
             U = self.inputs
             log_alpha = self.forward()
@@ -281,7 +309,7 @@ class IOHMM_model:
     
     def baum_welch(self):
 
-        optimizer = optim.SGD([self.log_initial_pi, self.theta_transition, self.theta_emission, self.log_sd], lr=0.01)
+        optimizer = optim.SGD([self.log_initial_pi, self.theta_transition, self.theta_emission, self.log_sd], lr=0.2)
         
         #scheduler = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.95)  # Decrease lr by 0.9 every 1 steps
         
@@ -289,6 +317,7 @@ class IOHMM_model:
 
         for i in range(self.max_iter):
             print(f"iteration {i}\r")
+            print(f"old likelihood: {old_log_likelihood}")
             self.history.append(old_log_likelihood)
 
             # E-step
@@ -318,6 +347,24 @@ class IOHMM_model:
                     break
 
                 old_log_likelihood = new_log_likelihood
+
+    def plot_state_distribution(self):
+        with torch.no_grad():
+            for state in range(self.num_states):
+                print(f"State {state} distribution:")
+                mean = self.emission_subnetwork(self.inputs[0])
+                #log_dnorm_prob = self.log_dnorm(x, mean[state], self.log_sd[state])
+                print(f"Mean: {mean[state]}")
+                print(f"Standard deviation: {torch.exp(self.log_sd[state])}")
+                print("\n")
+                #plot di una normale con media mean e standard deviation exp(log_sd[state])
+                x = np.linspace(-10, 10, 100)
+                y = np.exp(self.log_dnorm(torch.tensor(x), mean[state], self.log_sd[state]))
+                plt.plot(x, y)
+                plt.show()
+
+
+            
     
 
         
