@@ -380,4 +380,21 @@ class _BaseIOHMM():
             predictions.append(nu)
         return predictions
 
+    def predict(self, input):
+        pass
+
+    def viterbi(self):
+        viterbi_path = []
+        last_state = np.argmax(self.state_posts[-1,:])
+        viterbi_path.append(last_state)
+
+        for t in reversed(range(len(self.ins[0]))):
+            print(t)
+            prev_state = np.argmax(self.log_state_posts[t,:] + self.trans_posts[t,last_state,:])
+            last_state = prev_state
+            viterbi_path.append(prev_state)
+
+        viterbi_path = list(reversed(viterbi_path))
+
+        return viterbi_path
 
