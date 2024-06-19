@@ -389,7 +389,6 @@ class _BaseIOHMM():
         viterbi_path.append(last_state)
 
         for t in reversed(range(len(self.ins[0]))):
-            print(t)
             prev_state = np.argmax(self.log_state_posts[t,:] + self.trans_posts[t,last_state,:])
             last_state = prev_state
             viterbi_path.append(prev_state)
